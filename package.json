@@ -1,0 +1,9 @@
+{
+  "name": "hoist",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Learn every flag in the world with spaced repetition.",
+  "scripts": {
+    "build": "node src/build.js"
+  }
+}
