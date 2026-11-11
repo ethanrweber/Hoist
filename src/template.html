@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hoist: learn every flag</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#e7ebef; --surface:#f6f8fa; --surface-2:#dde3e9; --ink:#18212b; --muted:#566271;
+  --line:#c3ccd5; --pole:#7d8996; --accent:#1f5a96; --good:#17724a; --good-bg:#d8eee2;
+  --bad:#ad2f27; --bad-bg:#f6dfdc; --flag-edge:rgba(20,30,40,.42); --flag-shadow:rgba(20,30,40,.16);
+  --font:"Archivo", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color-scheme: light;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#141a21; --surface:#1c242d; --surface-2:#27313c; --ink:#e6ecf2; --muted:#9ba7b4;
+    --line:#35424f; --pole:#6f7c8a; --accent:#8fbaea; --good:#63cc90; --good-bg:#15382a;
+    --bad:#f08d82; --bad-bg:#40201c; --flag-edge:rgba(230,236,242,.38); --flag-shadow:rgba(0,0,0,.4);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#141a21; --surface:#1c242d; --surface-2:#27313c; --ink:#e6ecf2; --muted:#9ba7b4;
+  --line:#35424f; --pole:#6f7c8a; --accent:#8fbaea; --good:#63cc90; --good-bg:#15382a;
+  --bad:#f08d82; --bad-bg:#40201c; --flag-edge:rgba(230,236,242,.38); --flag-shadow:rgba(0,0,0,.4);
+  color-scheme: dark;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{height:100%; scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0; min-height:100%; background:var(--bg); color:var(--ink); font-family:var(--font);
+  font-size:16px; line-height:1.5; -webkit-font-smoothing:antialiased; font-variant-numeric:tabular-nums}
+button{font:inherit; color:inherit}
+img{max-width:100%}
+:focus-visible{outline:2px solid var(--accent); outline-offset:3px}
+.hidden{display:none !important}
+.sr{position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap}
+
+/* Flags: crisp edges, a hairline so white flags read on any background */
+.flag{display:block; filter:drop-shadow(0 0 .6px var(--flag-edge)) drop-shadow(0 3px 8px var(--flag-shadow))}
+
+/* ---------- Home ---------- */
+.home{max-width:980px; margin:0 auto; padding:28px 24px 64px}
+.top{display:flex; align-items:baseline; justify-content:space-between; gap:16px}
+.wordmark{margin:0; font-size:28px; line-height:1; font-weight:820; font-stretch:122%; letter-spacing:-.01em}
+.linkbtn{background:none; border:0; padding:6px 2px; color:var(--muted); cursor:pointer; text-decoration:underline; text-underline-offset:3px; text-decoration-color:var(--line)}
+.linkbtn:hover{color:var(--ink)}
+
+.today{margin-top:40px; display:grid; gap:22px}
+.halyard{position:relative; padding-top:6px; min-height:88px}
+.halyard::before{content:""; position:absolute; left:0; right:0; top:6px; height:1.5px; background:var(--pole); border-radius:1px}
+.hoist-row{display:flex; gap:14px; flex-wrap:nowrap; overflow:hidden; padding:0 2px}
+.pennant{position:relative; flex:0 0 auto; padding-top:14px}
+.pennant::before{content:""; position:absolute; left:50%; top:0; width:1px; height:14px; background:var(--pole)}
+.pennant img{height:44px; width:auto}
+.pennant.blank span{display:block; height:44px; width:62px; border:1.5px dashed var(--pole); border-radius:2px; opacity:.8}
+.pennant.more{padding-top:24px; color:var(--muted); font-size:14px; white-space:nowrap}
+.halyard.empty{min-height:28px}
+.lead{margin:0; font-size:22px; line-height:1.35; max-width:34ch; font-weight:450}
+.lead strong{font-weight:700}
+.actions{display:flex; flex-wrap:wrap; gap:12px; align-items:center}
+.btn{appearance:none; border:0; border-radius:10px; padding:13px 22px; font-weight:650; cursor:pointer; font-size:16px}
+.btn-primary{background:var(--ink); color:var(--bg)}
+.btn-primary:hover{filter:brightness(1.15)}
+.btn-quiet{background:var(--surface-2); color:var(--ink)}
+.btn-quiet:hover{filter:brightness(.97)}
+.kbd{display:inline-block; margin-left:10px; font-size:12px; font-weight:500; opacity:.7}
+
+.wall{margin-top:64px}
+.wall-head{display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:8px 24px; border-bottom:1.5px solid var(--ink); padding-bottom:10px}
+.wall-head h2{margin:0; font-size:20px; font-weight:780; font-stretch:115%}
+.wall-head p{margin:0; color:var(--muted); font-size:15px}
+.legend{display:flex; gap:18px; margin:14px 0 0; padding:0; list-style:none; color:var(--muted); font-size:14px}
+.legend li{display:flex; align-items:center; gap:7px}
+.legend img{height:14px; width:auto}
+.legend .l-new img{filter:grayscale(1); opacity:.28}
+.legend .l-learn img{opacity:.55}
+.region{margin-top:30px}
+.region-head{display:flex; justify-content:space-between; align-items:baseline; margin-bottom:12px}
+.region-head h3{margin:0; font-size:16px; font-weight:700}
+.region-head span{color:var(--muted); font-size:14px}
+.tiles{display:grid; grid-template-columns:repeat(auto-fill,minmax(52px,1fr)); gap:14px 10px}
+.tile{appearance:none; background:none; border:0; padding:4px; height:44px; display:flex; align-items:center; justify-content:center; cursor:pointer; border-radius:6px}
+.tile:hover{background:var(--surface-2)}
+.tile img{max-height:30px; max-width:46px; width:auto; height:auto}
+.tile.is-new img{filter:grayscale(1); opacity:.24}
+.tile.is-learning img{opacity:.6}
+
+/* ---------- Session ---------- */
+.session{position:fixed; inset:0; display:flex; flex-direction:column; background:var(--bg);
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px)}
+.bar{display:flex; align-items:center; gap:16px; padding:14px 20px; max-width:980px; width:100%; margin:0 auto}
+.close{appearance:none; border:0; background:none; width:36px; height:36px; border-radius:50%; cursor:pointer; color:var(--muted); font-size:22px; line-height:1}
+.close:hover{background:var(--surface-2); color:var(--ink)}
+.progress{flex:1; height:4px; background:var(--surface-2); border-radius:2px; overflow:hidden}
+.progress i{display:block; height:100%; width:0; background:var(--ink); transition:width .25s ease}
+.count{color:var(--muted); font-size:14px; min-width:64px; text-align:right}
+.stage{flex:1; overflow-y:auto; display:flex; flex-direction:column; align-items:center; padding:12px 20px 32px}
+.stage-inner{width:100%; max-width:640px; display:flex; flex-direction:column; align-items:center; gap:22px; margin:auto 0}
+.tag{font-size:14px; color:var(--muted); margin:0; text-align:center}
+.tag.quick{color:var(--bad)}
+
+/* The mast: every flag hangs from a pole on its hoist side */
+.mast{position:relative; padding-left:16px; padding-top:14px; padding-bottom:36px; align-self:center}
+.mast::before{content:""; position:absolute; left:0; top:4px; bottom:0; width:4px; border-radius:2px; background:linear-gradient(90deg, var(--pole), color-mix(in srgb, var(--pole) 70%, var(--bg)))}
+.mast::after{content:""; position:absolute; left:-3px; top:0; width:10px; height:10px; border-radius:50%; background:var(--pole)}
+.mast img{max-height:min(38vh,340px); max-width:min(560px, calc(100vw - 80px)); width:auto; height:auto}
+.mast.raise img{animation:raise .32s cubic-bezier(.2,.8,.3,1)}
+@keyframes raise{from{transform:translateY(26px); opacity:0} to{transform:none; opacity:1}}
+.mast.small img{max-height:120px; max-width:200px}
+.mast.small{padding-left:11px; padding-top:10px; padding-bottom:20px}
+.mast.small::before{width:3px; top:3px}
+.mast.small::after{width:8px; height:8px; left:-2.5px}
+
+.name{margin:0; font-size:clamp(30px, 6vw, 46px); line-height:1.05; font-weight:800; font-stretch:118%; text-align:center; letter-spacing:-.01em}
+.hook{margin:0; font-size:18px; line-height:1.45; text-align:center; max-width:40ch; color:var(--ink)}
+.prompt{margin:0; font-size:18px; color:var(--muted)}
+
+.choices{display:grid; grid-template-columns:1fr 1fr; gap:12px; width:100%}
+.choice{appearance:none; text-align:left; border:1.5px solid var(--line); background:var(--surface); border-radius:12px; padding:14px 16px; font-size:17px; font-weight:560; cursor:pointer; display:flex; gap:12px; align-items:center; min-height:58px}
+.choice:hover{border-color:var(--ink)}
+.choice .n{flex:0 0 auto; width:24px; height:24px; border-radius:6px; background:var(--surface-2); color:var(--muted); font-size:13px; display:grid; place-items:center; font-weight:600}
+.choice.right{border-color:var(--good); background:var(--good-bg); color:var(--good)}
+.choice.wrong{border-color:var(--bad); background:var(--bad-bg); color:var(--bad)}
+.choice:disabled{cursor:default}
+.choice:disabled:not(.right):not(.wrong){opacity:.5}
+
+.typed{width:100%; display:grid; gap:12px}
+.typed-row{display:flex; gap:10px}
+.typed input{flex:1; min-width:0; font:inherit; font-size:20px; padding:14px 16px; border-radius:12px; border:1.5px solid var(--line); background:var(--surface); color:var(--ink)}
+.typed input:focus{outline:none; border-color:var(--ink)}
+.typed input.right{border-color:var(--good); background:var(--good-bg); color:var(--good)}
+.typed input.wrong{border-color:var(--bad); background:var(--bad-bg); color:var(--bad)}
+.typed-help{display:flex; gap:22px; justify-content:center; flex-wrap:wrap}
+.hint{font-size:14px; color:var(--muted); text-align:center; margin:0}
+
+.verdict{margin:0; font-size:20px; font-weight:700; text-align:center}
+.verdict.good{color:var(--good)}
+.verdict.bad{color:var(--bad)}
+
+.compare{display:grid; grid-template-columns:1fr 1fr; gap:20px; width:100%; align-items:start}
+.compare .side{display:flex; flex-direction:column; align-items:center; gap:8px; text-align:center}
+.compare .who{font-size:14px; color:var(--muted); margin:0}
+.compare .nm{font-size:20px; font-weight:780; font-stretch:112%; margin:0; line-height:1.15}
+.compare .side.answer .nm{color:var(--good)}
+.compare .side.guess .nm{color:var(--bad)}
+.compare .tl{font-size:15px; margin:0; max-width:30ch}
+.compare .mast{height:calc(min(22vh,170px) + 34px); align-self:center}
+.compare .mast img{max-height:min(22vh,170px); max-width:min(280px, calc(50vw - 60px))}
+
+.alikes{width:100%; display:grid; gap:10px; justify-items:center}
+.alikes p{margin:0; font-size:14px; color:var(--muted)}
+.alike-row{display:flex; flex-wrap:wrap; justify-content:center; gap:16px 18px}
+.alike{display:flex; flex-direction:column; align-items:center; gap:6px; font-size:13px; color:var(--muted); background:none; border:0; padding:0; text-align:center; max-width:96px}
+.alike img{height:38px; width:auto; max-width:90px}
+button.alike{cursor:pointer}
+button.alike:hover{color:var(--ink)}
+
+.summary{max-width:640px; margin:0 auto; padding:56px 24px; display:grid; gap:26px}
+.summary h2{margin:0; font-size:34px; font-weight:820; font-stretch:120%; line-height:1.05}
+.summary .lead{max-width:none}
+.mixups{display:grid; gap:12px}
+.mixup{display:flex; align-items:center; gap:14px; flex-wrap:wrap; font-size:16px}
+.mixup img{height:30px; width:auto}
+.mixup .vs{color:var(--muted); font-size:14px}
+
+/* ---------- Dialogs ---------- */
+dialog{border:0; border-radius:18px; padding:0; background:var(--surface); color:var(--ink); width:min(520px, calc(100vw - 32px)); max-height:calc(100vh - 48px)}
+dialog::backdrop{background:rgba(10,15,20,.45)}
+.dlg{padding:26px 26px 24px; display:grid; gap:18px}
+.dlg-top{display:flex; justify-content:space-between; align-items:center}
+.dlg h2{margin:0; font-size:24px; font-weight:800; font-stretch:115%; line-height:1.1}
+.dlg .status{margin:0; color:var(--muted); font-size:15px}
+.dlg .hook{text-align:left; font-size:17px}
+.field{display:grid; gap:10px}
+.field > span{font-weight:650}
+.seg{display:flex; gap:8px; flex-wrap:wrap}
+.seg label{position:relative}
+.seg input{position:absolute; opacity:0; inset:0}
+.seg span{display:block; padding:9px 16px; border-radius:9px; background:var(--surface-2); cursor:pointer; font-weight:600}
+.seg input:checked + span{background:var(--ink); color:var(--bg)}
+.seg input:focus-visible + span{outline:2px solid var(--accent); outline-offset:2px}
+.check{display:flex; gap:10px; align-items:center; cursor:pointer}
+.check input{width:18px; height:18px; accent-color:var(--ink)}
+.note{margin:0; color:var(--muted); font-size:14px}
+.danger{color:var(--bad)}
+
+@media (max-width:560px){
+  .home{padding:20px 18px 56px}
+  .today{margin-top:28px}
+  .lead{font-size:20px}
+  .choices{grid-template-columns:1fr}
+  .choice{min-height:52px; padding:12px 14px}
+  .compare{gap:12px}
+  .compare .tl{font-size:14px}
+  .tiles{grid-template-columns:repeat(auto-fill,minmax(44px,1fr)); gap:10px 6px}
+  .tile img{max-height:26px; max-width:40px}
+  .stage{padding-top:4px}
+  .stage-inner{gap:16px}
+  .mast img{max-height:min(30vh,260px)}
+  .kbd, .kbd-hint{display:none}
+}
+@media (prefers-reduced-motion: reduce){
+  .mast.raise img{animation:none}
+  .progress i{transition:none}
+}
+</style>
+</head>
+<body>
+
+<main id="home" class="home" aria-labelledby="wm">
+  <header class="top">
+    <h1 class="wordmark" id="wm">Hoist</h1>
+    <button class="linkbtn" id="openSettings" type="button">Settings</button>
+  </header>
+
+  <section class="today" aria-label="Today">
+    <div class="halyard" id="halyard" aria-hidden="true"><div class="hoist-row" id="hoistRow"></div></div>
+    <p class="lead" id="lead"></p>
+    <div class="actions" id="actions"></div>
+  </section>
+
+  <section class="wall" aria-labelledby="wallTitle">
+    <div class="wall-head">
+      <h2 id="wallTitle">All flags</h2>
+      <p id="wallStats"></p>
+    </div>
+    <ul class="legend" id="legend">
+      <li class="l-new"><span data-sw></span>Not started</li>
+      <li class="l-learn"><span data-sw></span>Learning</li>
+      <li class="l-done"><span data-sw></span>Mastered</li>
+    </ul>
+    <div id="regions"></div>
+  </section>
+</main>
+
+<div id="session" class="session hidden" role="region" aria-label="Practice session">
+  <div class="bar">
+    <button class="close" id="endSession" type="button" aria-label="End session">&times;</button>
+    <div class="progress" aria-hidden="true"><i id="progressFill"></i></div>
+    <span class="count" id="count"></span>
+  </div>
+  <div class="stage"><div class="stage-inner" id="stage" aria-live="polite"></div></div>
+</div>
+
+<div id="summary" class="hidden"></div>
+
+<dialog id="detail"><div class="dlg" id="detailBody"></div></dialog>
+
+<dialog id="settings">
+  <form class="dlg" method="dialog" id="settingsForm">
+    <div class="dlg-top"><h2>Settings</h2><button class="close" value="close" aria-label="Close settings">&times;</button></div>
+    <div class="field">
+      <span>New flags per day</span>
+      <div class="seg" id="perDay"></div>
+    </div>
+    <label class="check"><input type="checkbox" id="kosovo"> Include Kosovo (makes it 197)</label>
+    <label class="check"><input type="checkbox" id="darkToggle"> Always use dark theme</label>
+    <div class="field">
+      <span>Progress</span>
+      <p class="note">Your progress is saved in this browser only.</p>
+      <div><button class="btn btn-quiet danger" type="button" id="resetBtn">Reset all progress</button></div>
+    </div>
+  </form>
+</dialog>
+
+<script>
+/*__DATA__*/
+</script>
+<script>
+(function(){
+"use strict";
+const KEY = "hoist.v1";
+const REGIONS = ["Africa","Americas","Asia","Europe","Oceania"];
+const BY = {}; COUNTRIES.forEach(c => BY[c.c] = c);
+const SIB = {}; FAMILIES.forEach(f => f.forEach(c => SIB[c] = f.filter(x => x !== c)));
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[ch]));
+
+/* ---------- Storage ---------- */
+function blankState(){ return {v:1, cards:{}, day:{n:0,newDone:0,bonus:0}, settings:{perDay:10,kosovo:false,dark:false}, confusions:{}}; }
+let S;
+try { S = JSON.parse(localStorage.getItem(KEY)) || blankState(); } catch(e){ S = blankState(); }
+S = Object.assign(blankState(), S);
+S.settings = Object.assign(blankState().settings, S.settings);
+function save(){ try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e){} }
+
+/* ---------- Dates: a "day" rolls over at 4am local time ---------- */
+function dayNum(){ const d = new Date(Date.now() - 4*3600e3); return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 864e5); }
+function rollDay(){ const t = dayNum(); if (S.day.n !== t){ S.day = {n:t,newDone:0,bonus:0}; save(); } }
+
+/* ---------- FSRS-4.5 scheduler ---------- */
+const W=[0.4872,1.4003,3.7145,13.8206,5.1618,1.2298,0.8975,0.031,1.6474,0.1367,1.0461,2.1072,0.0793,0.3246,1.587,0.2272,2.8755];
+const DECAY=-0.5, FACTOR=19/81, RETAIN=0.9;
+const clampD = d => Math.min(10, Math.max(1, d));
+const retr = (t, s) => Math.pow(1 + FACTOR * t / s, DECAY);
+const ivlFor = s => s / FACTOR * (Math.pow(RETAIN, 1/DECAY) - 1);
+const D0 = g => clampD(W[4] - (g - 3) * W[5]);
+function fsrs(st, g, elapsed){
+  if (!st) return {S: W[g-1], D: D0(g)};
+  const r = retr(elapsed, st.S);
+  let D = st.D - W[6] * (g - 3); D = clampD(W[7] * D0(4) + (1 - W[7]) * D);
+  let s;
+  if (g === 1) s = Math.min(st.S, W[11] * Math.pow(st.D, -W[12]) * (Math.pow(st.S + 1, W[13]) - 1) * Math.exp(W[14] * (1 - r)));
+  else s = st.S * (1 + Math.exp(W[8]) * (11 - st.D) * Math.pow(st.S, -W[9]) * (Math.exp(W[10] * (1 - r)) - 1) * (g === 2 ? W[15] : 1));
+  return {S: Math.max(0.1, s), D};
+}
+
+/* ---------- Helpers ---------- */
+const urlCache = {};
+function src(c){ return urlCache[c] || (urlCache[c] = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(FLAGS[c])); }
+function img(c, alt){ return `<img class="flag" src="${src(c)}" alt="${esc(alt == null ? "Flag" : alt)}" decoding="async">`; }
+function shuffle(a){ a = a.slice(); for (let i = a.length - 1; i > 0; i--){ const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+function active(){ return COUNTRIES.filter(c => !c.optional || S.settings.kosovo).map(c => c.c); }
+function isActive(c){ return BY[c] && (!BY[c].optional || S.settings.kosovo); }
+function card(c){ return S.cards[c]; }
+function seen(c){ return !!S.cards[c]; }
+function mastered(c){ const k = S.cards[c]; return !!k && k.stage === "typed" && k.S >= 21; }
+function status(c){ return !seen(c) ? "new" : mastered(c) ? "mastered" : "learning"; }
+function dueList(){ const t = dayNum(); return active().filter(c => seen(c) && card(c).due <= t); }
+function newAllowance(){ rollDay(); return Math.max(0, S.settings.perDay + S.day.bonus - S.day.newDone); }
+function confusedWith(c){
+  const m = {};
+  for (const k in S.confusions){ const [a,b] = k.split(">"); if (a === c) m[b] = (m[b]||0) + S.confusions[k]; else if (b === c) m[a] = (m[a]||0) + S.confusions[k]; }
+  return Object.keys(m).filter(isActive).sort((x,y) => m[y] - m[x]);
+}
+function lookalikes(c, n){
+  const out = []; const add = x => { if (x !== c && isActive(x) && !out.includes(x)) out.push(x); };
+  (SIB[c] || []).forEach(add); confusedWith(c).forEach(add);
+  if (out.length < 2) (NEIGHBORS[c] || []).slice(0, 3).forEach(add);
+  return out.slice(0, n || 5);
+}
+function distractors(c){
+  const out = []; const add = x => { if (x !== c && isActive(x) && !out.includes(x)) out.push(x); };
+  const conf = confusedWith(c);
+  if (conf[0]) add(conf[0]);
+  shuffle(SIB[c] || []).forEach(add);
+  conf.slice(1).forEach(add);
+  (NEIGHBORS[c] || []).forEach(add);
+  const pool = shuffle(active()); let i = 0;
+  while (out.length < 3 && i < pool.length) add(pool[i++]);
+  return out.slice(0, 3);
+}
+
+/* Introduction order: look-alike families come in together, mixed with stand-alone flags */
+function rng(seed){ return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const UNITS = (() => {
+  const r = rng(196); const sh = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--){ const j = Math.floor(r() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+  const inFam = new Set(FAMILIES.flat());
+  const fams = sh(FAMILIES), singles = sh(COUNTRIES.map(c => c.c).filter(c => !inFam.has(c)).map(c => [c]));
+  const units = []; let s = 0;
+  for (const f of fams){ units.push(f); for (let k = 0; k < 2 && s < singles.length; k++) units.push(singles[s++]); }
+  while (s < singles.length) units.push(singles[s++]);
+  return units;
+})();
+function pickNew(n){
+  const groups = []; let left = n;
+  for (const u of UNITS){
+    if (left <= 0) break;
+    const m = u.filter(c => isActive(c) && !seen(c));
+    if (!m.length) continue;
+    if (m.length <= left + 2){ groups.push(m); left -= m.length; }
+  }
+  return groups;
+}
+
+/* ---------- Answer checking ---------- */
+function norm(s){
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+    .replace(/&/g, " and ").replace(/['’`.]/g, "").replace(/[^a-z0-9]+/g, " ").trim()
+    .replace(/^the /, "").replace(/\bsaint\b/g, "st");
+}
+const NAMES = [];
+COUNTRIES.forEach(c => [c.n].concat(c.a || []).forEach(n => NAMES.push([norm(n), c.c])));
+const EXACT = new Map(NAMES);
+function lev(a, b){
+  if (Math.abs(a.length - b.length) > 3) return 9;
+  let prev = Array.from({length: b.length + 1}, (_, i) => i);
+  for (let i = 1; i <= a.length; i++){
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (a[i-1] === b[j-1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[b.length];
+}
+function judge(input, c){
+  const q = norm(input);
+  if (!q) return {empty: true};
+  const ex = EXACT.get(q);
+  if (ex && isActive(ex)) return ex === c ? {ok: true} : {ok: false, guess: ex};
+  let best = 9, hits = [];
+  for (const [n, code] of NAMES){
+    if (!isActive(code)) continue;
+    const tol = n.length <= 4 ? 0 : n.length <= 7 ? 1 : 2;
+    const d = lev(q, n);
+    if (d <= tol){ if (d < best){ best = d; hits = [code]; } else if (d === best) hits.push(code); }
+  }
+  if (hits.includes(c)) return {ok: true, typo: true};
+  if (hits.length) return {ok: false, guess: hits[0]};
+  return {ok: false};
+}
+
+/* ---------- Grading ---------- */
+function introduce(c){
+  if (seen(c)) return;
+  S.cards[c] = {stage: "mc", streak: 0, reps: 0, lapses: 0, S: 0, D: 0, last: dayNum(), due: dayNum()};
+  rollDay(); S.day.newDone++; save();
+}
+function grade(c, g){
+  const t = dayNum(); const k = S.cards[c] || (introduce(c), S.cards[c]);
+  const first = !k.reps; const elapsed = Math.max(0, t - k.last);
+  const st = fsrs(first ? null : {S: k.S, D: k.D}, g, elapsed);
+  k.S = st.S; k.D = st.D; k.reps++; k.last = t;
+  const ok = g > 1; let graduated = false;
+  if (k.stage === "mc"){ if (ok){ k.streak++; if (k.streak >= 2){ k.stage = "typed"; k.streak = 0; graduated = true; } } else k.streak = 0; }
+  else { if (ok) k.streak++; else { k.stage = "mc"; k.streak = 1; k.lapses++; } }
+  let ivl = (first || !ok) ? 1 : Math.max(1, Math.round(ivlFor(k.S) * (k.S > 3 ? 0.95 + Math.random() * 0.1 : 1)));
+  if (k.stage === "mc") ivl = Math.min(ivl, 2);   // recognition alone doesn't earn long gaps
+  if (graduated) ivl = Math.min(ivl, 3);           // first typed recall comes soon after graduating
+  k.due = t + ivl;
+  save();
+}
+
+/* ---------- Home ---------- */
+function renderHome(){
+  rollDay();
+  const due = dueList(); const nNew = Math.min(newAllowance(), pickNew(newAllowance()).flat().length);
+  const anySeen = Object.keys(S.cards).length > 0;
+  const total = active().length;
+
+  // Today's hoist: the flags waiting for review, plus blank tags for the new ones
+  const row = $("#hoistRow"); const hal = $("#halyard");
+  const doneToday = (!due.length && !nNew) ? active().filter(c => seen(c) && card(c).last === dayNum() && card(c).reps) : [];
+  const show = shuffle(due.length ? due : doneToday).slice(0, 14);
+  let h = show.map(c => `<div class="pennant">${img(c, "")}</div>`).join("");
+  const blanks = Math.min(nNew, Math.max(0, 16 - show.length));
+  for (let i = 0; i < blanks; i++) h += `<div class="pennant blank"><span></span></div>`;
+  const extra = (due.length ? due.length : doneToday.length) - show.length + nNew - blanks;
+  if (extra > 0) h += `<div class="pennant more">+${extra}</div>`;
+  row.innerHTML = h; hal.classList.toggle("empty", !h);
+
+  const mins = Math.max(1, Math.round((due.length * 9 + nNew * 22) / 60));
+  const lead = $("#lead"), acts = $("#actions");
+  const kbd = `<span class="kbd">Enter</span>`;
+  if (!anySeen){
+    lead.innerHTML = `Learn all ${total} flags in short daily sessions. Today: <strong>${nNew} new flags</strong>, about ${mins} minutes.`;
+    acts.innerHTML = `<button class="btn btn-primary" data-act="start" type="button">Start session${kbd}</button>`;
+  } else if (due.length || nNew){
+    const parts = [];
+    if (due.length) parts.push(`<strong>${due.length} ${due.length === 1 ? "review" : "reviews"}</strong>`);
+    if (nNew) parts.push(`<strong>${nNew} new ${nNew === 1 ? "flag" : "flags"}</strong>`);
+    lead.innerHTML = `${parts.join(" and ")} today, about ${mins} ${mins === 1 ? "minute" : "minutes"}.`;
+    acts.innerHTML = `<button class="btn btn-primary" data-act="start" type="button">Start session${kbd}</button>`;
+  } else {
+    const next = active().filter(seen).map(c => card(c).due).sort((a,b) => a - b)[0];
+    const leftToLearn = active().filter(c => !seen(c)).length;
+    const when = next == null ? "" : next - dayNum() <= 1 ? " Next reviews tomorrow." : ` Next reviews in ${next - dayNum()} days.`;
+    lead.innerHTML = `You’re done for today.${when}`;
+    acts.innerHTML = (leftToLearn ? `<button class="btn btn-primary" data-act="more" type="button">Learn 5 more flags</button>` : "")
+      + (Object.values(S.cards).filter(k => k.reps).length >= 4 ? `<button class="btn btn-quiet" data-act="extra" type="button">Extra practice</button>` : "");
+  }
+
+  // The wall
+  const m = active().filter(mastered).length, l = active().filter(c => status(c) === "learning").length;
+  $("#wallTitle").textContent = `All ${total} flags`;
+  $("#wallStats").textContent = `${m} mastered, ${l} learning, ${total - m - l} not started`;
+  $("#regions").innerHTML = REGIONS.map(r => {
+    const list = COUNTRIES.filter(c => c.r === r && isActive(c.c)).sort((a,b) => a.n.localeCompare(b.n));
+    const done = list.filter(c => mastered(c.c)).length;
+    return `<section class="region"><div class="region-head"><h3>${r}</h3><span>${done} of ${list.length} mastered</span></div>
+      <div class="tiles">${list.map(c => { const st = status(c.c);
+        return `<button class="tile is-${st}" type="button" data-show="${c.c}" aria-label="${esc(c.n)}, ${st === "new" ? "not started" : st}">${img(c.c, "")}</button>`; }).join("")}</div></section>`;
+  }).join("");
+}
+
+/* ---------- Detail dialog ---------- */
+function showDetail(c){
+  const k = card(c), t = dayNum(), st = status(c);
+  let line;
+  if (st === "new") line = "Not introduced yet.";
+  else {
+    const d = k.due - t; const when = d <= 0 ? "due today" : d === 1 ? "next review tomorrow" : `next review in ${d} days`;
+    line = (st === "mastered" ? "Mastered" : k.stage === "typed" ? "Learning, typing the name" : "Learning, multiple choice") + ", " + when + ".";
+  }
+  const al = lookalikes(c, 5);
+  $("#detailBody").innerHTML = `
+    <div class="dlg-top"><h2>${esc(BY[c].n)}</h2><button class="close" type="button" data-close aria-label="Close">&times;</button></div>
+    <div class="mast small">${img(c, "Flag of " + BY[c].n)}</div>
+    <p class="hook">${esc(BY[c].h)}</p>
+    <p class="status">${line}</p>
+    ${al.length ? `<div class="alikes" style="justify-items:start"><p>Easy to mix up with</p><div class="alike-row" style="justify-content:flex-start">${al.map(x => `<button class="alike" type="button" data-show="${x}">${img(x, "")}<span>${esc(BY[x].n)}</span></button>`).join("")}</div></div>` : ""}`;
+  const dlg = $("#detail"); if (!dlg.open) dlg.showModal();
+}
+
+/* ---------- Session ---------- */
+let sess = null;
+function buildQueue(mode){
+  const t = dayNum();
+  if (mode === "extra"){
+    const pool = active().filter(c => seen(c) && card(c).reps > 0)
+      .sort((a,b) => retr(t - card(a).last, Math.max(card(a).S, .1)) - retr(t - card(b).last, Math.max(card(b).S, .1))).slice(0, 20);
+    return shuffle(pool).map(c => ({k: "ask", c, n: 1}));
+  }
+  const reviews = shuffle(dueList()).sort((a,b) => card(a).due - card(b).due).slice(0, 120);
+  const rv = shuffle(reviews).map(c => ({k: "ask", c, n: 1}));
+  const groups = pickNew(newAllowance());
+  const items = []; let pending = [];
+  for (const g of groups){
+    g.forEach(c => items.push({k: "intro", c}));
+    items.push(...shuffle(pending));
+    pending = g.map(c => ({k: "ask", c, n: 1}));
+  }
+  items.push(...shuffle(pending));
+  const out = []; const total = items.length + rv.length; let ri = 0, ii = 0;
+  for (let p = 0; p < total; p++){
+    const want = Math.round((p + 1) * rv.length / total);
+    if (ri < want || ii >= items.length) out.push(rv[ri++]); else out.push(items[ii++]);
+  }
+  return out;
+}
+function startSession(mode){
+  if (mode === "more"){ rollDay(); S.day.bonus += 5; save(); mode = "normal"; }
+  const q = buildQueue(mode);
+  if (!q.length){ renderHome(); return; }
+  sess = {mode, q, i: 0, graded: new Set(), tried: new Set(), first: {right: 0, total: 0}, mixups: [], busy: false};
+  $("#home").classList.add("hidden"); $("#summary").classList.add("hidden"); $("#session").classList.remove("hidden");
+  window.scrollTo(0, 0);
+  next(true);
+}
+function endSession(){
+  const s = sess; sess = null;
+  $("#session").classList.add("hidden");
+  if (s && (s.first.total || s.mixups.length)) showSummary(s); else { $("#home").classList.remove("hidden"); renderHome(); }
+}
+function updateBar(){
+  const done = sess.i, total = sess.q.length;
+  $("#progressFill").style.width = (100 * done / Math.max(1, total)) + "%";
+  $("#count").textContent = `${Math.min(done + 1, total)} of ${total}`;
+}
+function next(first){
+  if (!sess) return;
+  if (!first) sess.i++;
+  while (sess.i < sess.q.length && sess.q[sess.i].k === "intro" && seen(sess.q[sess.i].c)) sess.i++;
+  if (sess.i >= sess.q.length){ endSession(); return; }
+  updateBar();
+  const it = sess.q[sess.i];
+  sess.busy = false;
+  if (it.k === "intro") renderIntro(it.c); else renderAsk(it);
+}
+function mastHTML(c, cls){ return `<div class="mast raise ${cls || ""}">${img(c, "Flag to identify")}</div>`; }
+
+function renderIntro(c){
+  introduce(c);
+  sess.view = "intro";
+  const al = lookalikes(c, 5);
+  $("#stage").innerHTML = `
+    <p class="tag">New flag</p>
+    <div class="mast raise">${img(c, "Flag of " + BY[c].n)}</div>
+    <h2 class="name">${esc(BY[c].n)}</h2>
+    <p class="hook">${esc(BY[c].h)}</p>
+    ${al.length ? `<div class="alikes"><p>Easy to mix up with</p><div class="alike-row">${al.map(x => `<div class="alike">${img(x, "")}<span>${esc(BY[x].n)}</span></div>`).join("")}</div></div>` : ""}
+    <button class="btn btn-primary" type="button" data-act="next">Got it<span class="kbd">Enter</span></button>`;
+  focusMain();
+}
+
+function stageOf(c){ const k = card(c); return k ? k.stage : "mc"; }
+function renderAsk(it, forceMC){
+  const c = it.c;
+  const mode = forceMC ? "mc" : stageOf(c);
+  sess.view = mode; sess.t0 = performance.now(); sess.firstKey = null; sess.hint = !!forceMC;
+  const tag = sess.mode === "extra" ? `<p class="tag">Extra practice</p>` : (it.n > 1 ? `<p class="tag">Try again</p>` : "");
+  if (mode === "mc"){
+    const opts = shuffle([c].concat(distractors(c)));
+    sess.opts = opts;
+    $("#stage").innerHTML = `${tag}${forceMC ? "" : mastHTML(c)}
+      ${forceMC ? `<div class="mast">${img(c, "Flag to identify")}</div>` : ""}
+      <p class="prompt">Which country?</p>
+      <div class="choices">${opts.map((o, i) => `<button class="choice" type="button" data-pick="${o}"><span class="n">${i+1}</span><span>${esc(BY[o].n)}</span></button>`).join("")}</div>`;
+    focusMain();
+  } else {
+    $("#stage").innerHTML = `${tag}${mastHTML(c)}
+      <form class="typed" id="typedForm" autocomplete="off">
+        <label class="sr" for="answer">Country name</label>
+        <div class="typed-row">
+          <input id="answer" name="answer" type="text" placeholder="Type the country" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
+          <button class="btn btn-primary" type="submit">Check</button>
+        </div>
+        <div class="typed-help">
+          <button class="linkbtn" type="button" data-act="hint">Show choices</button>
+          <button class="linkbtn" type="button" data-act="dunno">I don’t know</button>
+        </div>
+        <p class="hint kbd-hint">Press Enter on an empty box to see choices, or Esc if you don’t know.</p>
+      </form>`;
+    const inp = $("#answer");
+    inp.addEventListener("input", () => { if (sess && sess.firstKey == null) sess.firstKey = performance.now() - sess.t0; }, {once: false});
+    inp.focus({preventScroll: true});
+  }
+}
+function focusMain(){ const b = $("#stage .choice, #stage [data-act=next]"); if (b) b.focus({preventScroll: true}); }
+
+function pick(o){
+  if (!sess || sess.busy || sess.view !== "mc") return;
+  sess.busy = true;
+  const it = sess.q[sess.i], c = it.c, rt = performance.now() - sess.t0;
+  const ok = o === c;
+  document.querySelectorAll("#stage .choice").forEach(b => { b.disabled = true; if (b.dataset.pick === c) b.classList.add("right"); else if (b.dataset.pick === o) b.classList.add("wrong"); });
+  const g = !ok ? 1 : (sess.hint || rt > 6000) ? 2 : 3;
+  settle(it, {ok, guess: ok ? null : o, g, quick: !ok && rt < 2200 && !sess.hint});
+}
+function submitTyped(){
+  if (!sess || sess.busy || sess.view !== "typed") return;
+  const it = sess.q[sess.i], c = it.c, inp = $("#answer"); const val = inp.value;
+  const r = judge(val, c);
+  if (r.empty){ renderAsk(it, true); return; }
+  sess.busy = true;
+  const rt = performance.now() - sess.t0;
+  inp.readOnly = true; inp.classList.add(r.ok ? "right" : "wrong");
+  const g = !r.ok ? 1 : (r.typo || rt > 12000) ? 2 : 3;
+  settle(it, {ok: r.ok, guess: r.guess || null, typo: r.typo, typedRaw: val, g, quick: !r.ok && !!r.guess && sess.firstKey != null && sess.firstKey < 2500});
+}
+function dunno(){
+  if (!sess || sess.busy) return;
+  sess.busy = true;
+  settle(sess.q[sess.i], {ok: false, guess: null, g: 1, dunno: true});
+}
+function settle(it, r){
+  const c = it.c;
+  if (!sess.tried.has(c)){ sess.tried.add(c); sess.first.total++; if (r.ok) sess.first.right++; }
+  if (sess.mode !== "extra" && !sess.graded.has(c)){ grade(c, r.g); sess.graded.add(c); }
+  if (r.guess && r.guess !== c){
+    const key = c + ">" + r.guess; S.confusions[key] = (S.confusions[key] || 0) + 1; save();
+    sess.mixups.push([c, r.guess]);
+  }
+  if (!r.ok && it.n < 3){
+    const gap = r.quick ? 3 : 5;
+    sess.q.splice(Math.min(sess.q.length, sess.i + 1 + gap), 0, {k: "ask", c, n: it.n + 1});
+  }
+  if (r.ok){
+    const v = document.createElement("p");
+    v.className = "verdict good";
+    v.textContent = r.typo ? `Correct. It’s spelled ${BY[c].n}.` : `${BY[c].n}`;
+    $("#stage").appendChild(v);
+    sess.view = "done-good";
+    sess.timer = setTimeout(() => next(), r.typo ? 1500 : 650);
+  } else {
+    sess.timer = setTimeout(() => showMiss(c, r), sess.view === "mc" ? 450 : 350);
+  }
+}
+function showMiss(c, r){
+  if (!sess) return;
+  sess.view = "miss"; sess.missAt = performance.now();
+  const ans = BY[c];
+  let body;
+  if (r.guess){
+    const gs = BY[r.guess];
+    body = `
+      ${r.quick ? `<p class="tag quick">That was a fast answer. Look at what sets them apart.</p>` : ""}
+      <div class="compare">
+        <div class="side guess"><p class="who">You said</p><div class="mast small">${img(r.guess, "Flag of " + gs.n)}</div><p class="nm">${esc(gs.n)}</p><p class="tl">${esc(gs.h)}</p></div>
+        <div class="side answer"><p class="who">It’s</p><div class="mast small">${img(c, "Flag of " + ans.n)}</div><p class="nm">${esc(ans.n)}</p><p class="tl">${esc(ans.h)}</p></div>
+      </div>`;
+  } else {
+    const al = lookalikes(c, 4);
+    body = `
+      ${r.typedRaw && !r.dunno ? `<p class="tag">“${esc(r.typedRaw)}” didn’t match a country.</p>` : ""}
+      <div class="mast">${img(c, "Flag of " + ans.n)}</div>
+      <h2 class="name" style="color:var(--good)">${esc(ans.n)}</h2>
+      <p class="hook">${esc(ans.h)}</p>
+      ${al.length ? `<div class="alikes"><p>Easy to mix up with</p><div class="alike-row">${al.map(x => `<div class="alike">${img(x, "")}<span>${esc(BY[x].n)}</span></div>`).join("")}</div></div>` : ""}`;
+  }
+  $("#stage").innerHTML = body + `<button class="btn btn-primary" type="button" data-act="next">Continue<span class="kbd">Enter</span></button>`;
+  focusMain();
+}
+
+/* ---------- Summary ---------- */
+function showSummary(s){
+  const el = $("#summary");
+  const pairs = {}; s.mixups.forEach(([a,b]) => { const k = a + ">" + b; pairs[k] = (pairs[k] || 0) + 1; });
+  const list = Object.keys(pairs).slice(0, 6);
+  const lead = `${s.first.total} ${s.first.total === 1 ? "flag" : "flags"}, <strong>${s.first.right} right on the first try</strong>.`
+    + (s.mode === "extra" ? " Extra practice doesn’t change your review schedule." : "");
+  el.className = "summary";
+  el.innerHTML = `
+    <h2>${s.mode === "extra" ? "Practice done" : "Session done"}</h2>
+    <p class="lead">${lead}</p>
+    ${list.length ? `<div class="mixups"><p class="note">Mixed up today</p>${list.map(k => { const [a,b] = k.split(">");
+      return `<div class="mixup">${img(a, "")}<span><strong>${esc(BY[a].n)}</strong></span><span class="vs">mistaken for</span>${img(b, "")}<span>${esc(BY[b].n)}</span></div>`; }).join("")}</div>` : ""}
+    <div class="actions"><button class="btn btn-primary" type="button" data-act="home">Back to my flags<span class="kbd">Enter</span></button></div>`;
+  el.classList.remove("hidden");
+  el.querySelector("[data-act=home]").focus({preventScroll: true});
+}
+
+/* ---------- Settings ---------- */
+function renderSettings(){
+  $("#perDay").innerHTML = [5,10,15,20].map(n => `<label><input type="radio" name="perDay" value="${n}" ${S.settings.perDay === n ? "checked" : ""}><span>${n}</span></label>`).join("");
+  $("#kosovo").checked = !!S.settings.kosovo;
+  $("#darkToggle").checked = !!S.settings.dark;
+  const rb = $("#resetBtn"); rb.textContent = "Reset all progress"; rb.dataset.armed = "";
+}
+function applyTheme(){ if (S.settings.dark) document.documentElement.setAttribute("data-theme", "dark"); else document.documentElement.removeAttribute("data-theme"); }
+
+/* ---------- Events ---------- */
+document.addEventListener("click", e => {
+  const t = e.target.closest("[data-act],[data-pick],[data-show],[data-close]");
+  if (!t) return;
+  if (t.dataset.pick) return pick(t.dataset.pick);
+  if (t.dataset.show) return showDetail(t.dataset.show);
+  if (t.hasAttribute("data-close")) return $("#detail").close();
+  const a = t.dataset.act;
+  if (a === "start") startSession("normal");
+  else if (a === "more") startSession("more");
+  else if (a === "extra") startSession("extra");
+  else if (a === "next"){ if (sess){ clearTimeout(sess.timer); next(); } }
+  else if (a === "hint"){ if (sess && !sess.busy) renderAsk(sess.q[sess.i], true); }
+  else if (a === "dunno") dunno();
+  else if (a === "home"){ $("#summary").classList.add("hidden"); $("#home").classList.remove("hidden"); renderHome(); window.scrollTo(0, 0); }
+});
+document.addEventListener("submit", e => { if (e.target.id === "typedForm"){ e.preventDefault(); submitTyped(); } });
+document.addEventListener("keydown", e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if ($("#detail").open || $("#settings").open) return;
+  if (sess){
+    if (sess.view === "mc" && /^[1-4]$/.test(e.key)){ const o = sess.opts[+e.key - 1]; if (o){ e.preventDefault(); pick(o); } return; }
+    if (sess.view === "typed" && e.key === "Escape"){ e.preventDefault(); dunno(); return; }
+    if ((e.key === "Enter" || e.key === " ") && (sess.view === "miss" || sess.view === "done-good" || sess.view === "intro")){
+      if (sess.view === "miss" && performance.now() - sess.missAt < 300) { e.preventDefault(); return; }
+      e.preventDefault(); clearTimeout(sess.timer); next(); return;
+    }
+    if (e.key === "Escape" && sess.view !== "typed"){ e.preventDefault(); endSession(); }
+    return;
+  }
+  if (e.key === "Enter" && !$("#summary").classList.contains("hidden")){ e.preventDefault(); $("#summary [data-act=home]").click(); return; }
+  if (e.key === "Enter" && !$("#home").classList.contains("hidden") && document.activeElement === document.body){
+    const b = $("#actions .btn-primary"); if (b){ e.preventDefault(); b.click(); }
+  }
+});
+$("#endSession").addEventListener("click", endSession);
+$("#openSettings").addEventListener("click", () => { renderSettings(); $("#settings").showModal(); });
+$("#settingsForm").addEventListener("change", e => {
+  if (e.target.name === "perDay") S.settings.perDay = +e.target.value;
+  if (e.target.id === "kosovo") S.settings.kosovo = e.target.checked;
+  if (e.target.id === "darkToggle"){ S.settings.dark = e.target.checked; applyTheme(); }
+  save(); renderHome();
+});
+$("#resetBtn").addEventListener("click", e => {
+  const b = e.currentTarget;
+  if (!b.dataset.armed){ b.dataset.armed = "1"; b.textContent = "Click again to erase everything"; return; }
+  const keep = S.settings; S = blankState(); S.settings = keep; save();
+  $("#settings").close(); renderHome();
+});
+$("#detail").addEventListener("click", e => { if (e.target === $("#detail")) $("#detail").close(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !sess && !$("#home").classList.contains("hidden")) renderHome(); });
+
+applyTheme();
+document.querySelectorAll("#legend [data-sw]").forEach(el => el.innerHTML = img("mu", ""));
+renderHome();
+})();
+</script>
+</body>
+</html>
