@@ -15,6 +15,9 @@ const UPGRADES = {
   // settings.dark (true/false) became settings.theme ("system", "light" or "dark").
   1: s => { const st = isObj(s.settings) ? s.settings : {}; st.theme = st.dark ? "dark" : "system"; delete st.dark; s.settings = st; },
 };
+// True when the save was written by a newer version of Hoist (open in another tab). Such a save can be
+// shown, but this version must not write over it: it doesn't know the newer fields.
+function isNewer(saved){ return isObj(saved) && saved.v > VERSION; }
 // Turns whatever was in storage into a current-version state, filling in anything missing.
 function migrate(saved){
   if (!isObj(saved)) return blankState();
@@ -133,26 +136,30 @@ function createCore(data, env){
 
   /* ---------- Answer checking ---------- */
   function norm(s){
-    return s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase()
+    return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
       .replace(/&/g, " and ").replace(/['’`.]/g, "").replace(/[^a-z0-9]+/g, " ").trim()
       .replace(/^the /, "").replace(/\bsaint\b/g, "st");
   }
   const NAMES = [];
   COUNTRIES.forEach(c => [c.n].concat(c.a || []).forEach(n => NAMES.push([norm(n), c.c])));
   const EXACT = new Map(NAMES);
+  // Edit distance where swapping two neighboring letters counts as one edit, like a dropped or extra letter.
   function lev(a, b){
     if (Math.abs(a.length - b.length) > 3) return 9;
-    let prev = Array.from({length: b.length + 1}, (_, i) => i);
+    let prev2 = null, prev = Array.from({length: b.length + 1}, (_, i) => i);
     for (let i = 1; i <= a.length; i++){
       const cur = [i];
-      for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (a[i-1] === b[j-1] ? 0 : 1));
-      prev = cur;
+      for (let j = 1; j <= b.length; j++){
+        cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (a[i-1] === b[j-1] ? 0 : 1));
+        if (i > 1 && j > 1 && a[i-1] === b[j-2] && a[i-2] === b[j-1]) cur[j] = Math.min(cur[j], prev2[j-2] + 1);
+      }
+      prev2 = prev; prev = cur;
     }
     return prev[b.length];
   }
   // {empty} for a blank answer, {ok} for the right name, {ok, typo} for a near miss of the right name only,
-  // and {ok: false, guess?} otherwise. A typo as close to another country as to the right one is wrong:
-  // there's no telling which was meant ("Nigeri" for Niger could be Nigeria).
+  // {ambiguous} for a typo as close to another country as to the right one (there's no telling which was
+  // meant: "Austrlia" could be Australia or Austria), and {ok: false, guess?} otherwise.
   function judge(input, c){
     const q = norm(input);
     if (!q) return {empty: true};
@@ -167,7 +174,7 @@ function createCore(data, env){
       if (d < best){ best = d; hits = new Set([code]); } else if (d === best) hits.add(code);
     }
     const others = [...hits].filter(x => x !== c);
-    if (hits.has(c) && !others.length) return {ok: true, typo: true};
+    if (hits.has(c)) return others.length ? {ambiguous: true} : {ok: true, typo: true};
     return others.length ? {ok: false, guess: others[0]} : {ok: false};
   }
 
@@ -230,7 +237,7 @@ function createCore(data, env){
     lookalikes, distractors, pickNew, planToday, judge, introduce, grade, buildQueue, shuffle: a => shuffle(a, random)};
 }
 
-return {VERSION, blankState, migrate, createCore, fsrs, retr, ivlFor, W};
+return {VERSION, blankState, isNewer, migrate, createCore, fsrs, retr, ivlFor, W};
 })();
 
 if (typeof module !== "undefined") module.exports = HoistCore;

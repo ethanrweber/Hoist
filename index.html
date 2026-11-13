@@ -139,6 +139,10 @@ img{max-width:100%}
 .typed input.wrong{border-color:var(--bad); background:var(--bad-bg); color:var(--bad)}
 .typed-help{display:flex; gap:22px; justify-content:center; flex-wrap:wrap}
 .hint{font-size:14px; color:var(--muted); text-align:center; margin:0}
+.retry{color:var(--ink); font-weight:600}
+.outdated{position:fixed; top:0; left:0; right:0; z-index:10; padding:calc(10px + env(safe-area-inset-top,0px)) 16px 10px;
+  background:var(--bad-bg); color:var(--bad); text-align:center; font-size:15px}
+.outdated .linkbtn{color:inherit; padding:0; text-decoration-color:currentColor}
 
 .verdict{margin:0; font-size:20px; font-weight:700; text-align:center}
 .verdict.good{color:var(--good)}
@@ -215,6 +219,8 @@ dialog::backdrop{background:rgba(10,15,20,.45)}
 </style>
 </head>
 <body>
+
+<div id="outdated" class="outdated hidden" role="alert">Hoist was updated in another tab. <button class="linkbtn" type="button" data-act="reload">Reload this page</button> to keep saving progress.</div>
 
 <main id="home" class="home" aria-labelledby="wm">
   <header class="top">
@@ -299,6 +305,9 @@ const UPGRADES = {
   // settings.dark (true/false) became settings.theme ("system", "light" or "dark").
   1: s => { const st = isObj(s.settings) ? s.settings : {}; st.theme = st.dark ? "dark" : "system"; delete st.dark; s.settings = st; },
 };
+// True when the save was written by a newer version of Hoist (open in another tab). Such a save can be
+// shown, but this version must not write over it: it doesn't know the newer fields.
+function isNewer(saved){ return isObj(saved) && saved.v > VERSION; }
 // Turns whatever was in storage into a current-version state, filling in anything missing.
 function migrate(saved){
   if (!isObj(saved)) return blankState();
@@ -417,26 +426,30 @@ function createCore(data, env){
 
   /* ---------- Answer checking ---------- */
   function norm(s){
-    return s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase()
+    return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
       .replace(/&/g, " and ").replace(/['’`.]/g, "").replace(/[^a-z0-9]+/g, " ").trim()
       .replace(/^the /, "").replace(/\bsaint\b/g, "st");
   }
   const NAMES = [];
   COUNTRIES.forEach(c => [c.n].concat(c.a || []).forEach(n => NAMES.push([norm(n), c.c])));
   const EXACT = new Map(NAMES);
+  // Edit distance where swapping two neighboring letters counts as one edit, like a dropped or extra letter.
   function lev(a, b){
     if (Math.abs(a.length - b.length) > 3) return 9;
-    let prev = Array.from({length: b.length + 1}, (_, i) => i);
+    let prev2 = null, prev = Array.from({length: b.length + 1}, (_, i) => i);
     for (let i = 1; i <= a.length; i++){
       const cur = [i];
-      for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (a[i-1] === b[j-1] ? 0 : 1));
-      prev = cur;
+      for (let j = 1; j <= b.length; j++){
+        cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (a[i-1] === b[j-1] ? 0 : 1));
+        if (i > 1 && j > 1 && a[i-1] === b[j-2] && a[i-2] === b[j-1]) cur[j] = Math.min(cur[j], prev2[j-2] + 1);
+      }
+      prev2 = prev; prev = cur;
     }
     return prev[b.length];
   }
   // {empty} for a blank answer, {ok} for the right name, {ok, typo} for a near miss of the right name only,
-  // and {ok: false, guess?} otherwise. A typo as close to another country as to the right one is wrong:
-  // there's no telling which was meant ("Nigeri" for Niger could be Nigeria).
+  // {ambiguous} for a typo as close to another country as to the right one (there's no telling which was
+  // meant: "Austrlia" could be Australia or Austria), and {ok: false, guess?} otherwise.
   function judge(input, c){
     const q = norm(input);
     if (!q) return {empty: true};
@@ -451,7 +464,7 @@ function createCore(data, env){
       if (d < best){ best = d; hits = new Set([code]); } else if (d === best) hits.add(code);
     }
     const others = [...hits].filter(x => x !== c);
-    if (hits.has(c) && !others.length) return {ok: true, typo: true};
+    if (hits.has(c)) return others.length ? {ambiguous: true} : {ok: true, typo: true};
     return others.length ? {ok: false, guess: others[0]} : {ok: false};
   }
 
@@ -514,7 +527,7 @@ function createCore(data, env){
     lookalikes, distractors, pickNew, planToday, judge, introduce, grade, buildQueue, shuffle: a => shuffle(a, random)};
 }
 
-return {VERSION, blankState, migrate, createCore, fsrs, retr, ivlFor, W};
+return {VERSION, blankState, isNewer, migrate, createCore, fsrs, retr, ivlFor, W};
 })();
 
 if (typeof module !== "undefined") module.exports = HoistCore;
@@ -533,8 +546,17 @@ const esc = s => String(s).replace(/[&<>"]/g, ch => ({"&":"&amp;","<":"&lt;",">"
 // another tab saves and whenever the page is shown again (see Events), instead of writing back a stale copy.
 let S;
 let saveFailed = false;
-function load(){ try { return HoistCore.migrate(JSON.parse(localStorage.getItem(KEY))); } catch(e){ return HoistCore.blankState(); } }
-function save(){ try { localStorage.setItem(KEY, JSON.stringify(S)); saveFailed = false; } catch(e){ saveFailed = true; } }
+// True while the saved progress comes from a newer version of Hoist (open in another tab). This page then
+// shows that progress but never saves, and asks to be reloaded.
+let outdated = false;
+function load(){
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(KEY)); } catch(e){}
+  outdated = HoistCore.isNewer(saved);
+  $("#outdated").classList.toggle("hidden", !outdated);
+  return HoistCore.migrate(saved);
+}
+function save(){ if (outdated) return; try { localStorage.setItem(KEY, JSON.stringify(S)); saveFailed = false; } catch(e){ saveFailed = true; } }
 // Skipped while saving fails (private mode, full storage), so progress that exists only in this page isn't dropped.
 function reload(){ if (!saveFailed) S = load(); }
 S = load();
@@ -710,6 +732,7 @@ function renderAsk(it, forceMC){
           <input id="answer" name="answer" type="text" placeholder="Type the country" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
           <button class="btn btn-primary" type="submit">Check</button>
         </div>
+        <p class="hint retry hidden" id="typedNote"></p>
         <div class="typed-help">
           <button class="linkbtn" type="button" data-act="hint">Show choices</button>
           <button class="linkbtn" type="button" data-act="dunno">I don’t know</button>
@@ -729,15 +752,23 @@ function pick(o){
   const it = sess.q[sess.i], c = it.c, rt = performance.now() - sess.t0;
   const ok = o === c;
   document.querySelectorAll("#stage .choice").forEach(b => { b.disabled = true; if (b.dataset.pick === c) b.classList.add("right"); else if (b.dataset.pick === o) b.classList.add("wrong"); });
-  // After "Show choices" on a typing question, a right pick is still a miss for scheduling, but the flag stays at typing.
+  // After "Show choices" on a typing question, a right pick still counts as a miss (see settle), but the flag stays at typing.
   const g = (!ok || sess.hint) ? 1 : rt > 6000 ? 2 : 3;
-  settle(it, {ok, guess: ok ? null : o, g, keepStage: ok && sess.hint, quick: !ok && rt < 2200 && !sess.hint});
+  settle(it, {ok, guess: ok ? null : o, g, hinted: ok && sess.hint, quick: !ok && rt < 2200 && !sess.hint});
 }
 function submitTyped(){
   if (!sess || sess.busy || sess.view !== "typed") return;
   const it = sess.q[sess.i], c = it.c, inp = $("#answer"); const val = inp.value;
   const r = judge(val, c);
   if (r.empty){ renderAsk(it, true); return; }
+  if (r.ambiguous){
+    // As close to another country as to the right one: ask again instead of guessing which was meant.
+    const note = $("#typedNote");
+    note.textContent = "That’s close to more than one country. Check the spelling.";
+    note.classList.remove("hidden");
+    inp.select();
+    return;
+  }
   sess.busy = true;
   const rt = performance.now() - sess.t0;
   inp.readOnly = true; inp.classList.add(r.ok ? "right" : "wrong");
@@ -751,24 +782,27 @@ function dunno(){
 }
 function settle(it, r){
   const c = it.c;
-  if (!sess.tried.has(c)){ sess.tried.add(c); sess.first.total++; if (r.ok) sess.first.right++; }
-  if (sess.mode !== "extra" && !sess.graded.has(c)){ grade(c, r.g, {keepStage: r.keepStage}); sess.graded.add(c); }
+  // r.hinted: a right pick after "Show choices". Shown as right, but it counts as a miss everywhere else.
+  const missed = !r.ok || r.hinted;
+  if (!sess.tried.has(c)){ sess.tried.add(c); sess.first.total++; if (!missed) sess.first.right++; }
+  if (sess.mode !== "extra" && !sess.graded.has(c)){ grade(c, r.g, {keepStage: r.hinted}); sess.graded.add(c); }
   if (r.guess && r.guess !== c){
     const key = c + ">" + r.guess; S.confusions[key] = (S.confusions[key] || 0) + 1;
     sess.mixups.push([c, r.guess]);
   }
   save();
-  if (!r.ok && it.n < 3){
+  if (missed && it.n < 3){
     const gap = r.quick ? 3 : 5;
     sess.q.splice(Math.min(sess.q.length, sess.i + 1 + gap), 0, {k: "ask", c, n: it.n + 1});
   }
   if (r.ok){
     const v = document.createElement("p");
-    v.className = "verdict good";
-    v.textContent = r.typo ? `Correct. It’s spelled ${BY[c].n}.` : `${BY[c].n}`;
+    v.className = r.hinted ? "verdict" : "verdict good";
+    v.textContent = r.hinted ? "Right, but using choices counts as a miss. It’ll come back."
+      : r.typo ? `Correct. It’s spelled ${BY[c].n}.` : `${BY[c].n}`;
     $("#stage").appendChild(v);
     sess.view = "done-good";
-    sess.timer = setTimeout(() => next(), r.typo ? 1500 : 650);
+    sess.timer = setTimeout(() => next(), r.hinted ? 2000 : r.typo ? 1500 : 650);
   } else {
     sess.timer = setTimeout(() => showMiss(c, r), sess.view === "mc" ? 450 : 350);
   }
@@ -847,6 +881,7 @@ document.addEventListener("click", e => {
   else if (a === "next"){ if (sess){ clearTimeout(sess.timer); next(); } }
   else if (a === "hint"){ if (sess && !sess.busy) renderAsk(sess.q[sess.i], true); }
   else if (a === "dunno") dunno();
+  else if (a === "reload") location.reload();
   else if (a === "home"){ $("#summary").classList.add("hidden"); $("#home").classList.remove("hidden"); renderHome(); window.scrollTo(0, 0); }
 });
 document.addEventListener("submit", e => { if (e.target.id === "typedForm"){ e.preventDefault(); submitTyped(); } });
@@ -884,7 +919,8 @@ $("#resetBtn").addEventListener("click", e => {
 });
 $("#detail").addEventListener("click", e => { if (e.target === $("#detail")) $("#detail").close(); });
 // Pick up progress saved by other tabs, so this page never writes an older copy over it.
-function refresh(){ reload(); applyTheme(); if (!sess && !$("#home").classList.contains("hidden")) renderHome(); }
+// A hidden page only reloads the data; visibilitychange redraws it when it's shown again.
+function refresh(){ reload(); applyTheme(); if (!document.hidden && !sess && !$("#home").classList.contains("hidden")) renderHome(); }
 window.addEventListener("storage", e => { if (e.key === KEY || e.key === null) refresh(); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 
