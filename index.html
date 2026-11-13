@@ -105,7 +105,7 @@ img{max-width:100%}
 
 /* ---------- Session ---------- */
 /* --vvh and --vvtop are the part of the screen that's actually visible (above the on-screen keyboard on phones),
-   set by trackVisibleArea() in the script. Without them the session fills the whole window. */
+   set on #session by trackVisibleArea() in the script. Without them the session fills the whole window. */
 .session{position:fixed; top:var(--vvtop,0px); left:0; right:0; height:var(--vvh,100%); display:flex; flex-direction:column; background:var(--bg);
   padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px)}
 .bar{display:flex; align-items:center; gap:16px; padding:14px 20px; max-width:980px; width:100%; margin:0 auto}
@@ -122,11 +122,8 @@ img{max-width:100%}
 .mast{position:relative; padding-left:16px; padding-top:14px; padding-bottom:36px; align-self:center}
 .mast::before{content:""; position:absolute; left:0; top:4px; bottom:0; width:4px; border-radius:2px; background:linear-gradient(90deg, var(--pole), color-mix(in srgb, var(--pole) 70%, var(--bg)))}
 .mast::after{content:""; position:absolute; left:-3px; top:0; width:10px; height:10px; border-radius:50%; background:var(--pole)}
+/* In questions (.mast.fit), fitFlag() in the script lowers this further when needed so the whole question fits. */
 .mast img{max-height:min(38vh,340px); max-height:min(38svh,340px); max-width:min(560px, calc(100vw - 80px)); width:auto; height:auto}
-/* In a question the flag also shrinks so the answers fit on screen, above the on-screen keyboard if it's open.
-   The amount subtracted is about the height of everything else on that screen at phone size. */
-.mast.fit-mc img{max-height:clamp(72px, calc(var(--vvh, 100svh) - 405px), min(38svh, 340px))}
-.mast.fit-typed img{max-height:clamp(72px, calc(var(--vvh, 100svh) - 265px), min(38svh, 340px))}
 .mast.raise img{animation:raise .32s cubic-bezier(.2,.8,.3,1)}
 @keyframes raise{from{transform:translateY(26px); opacity:0} to{transform:none; opacity:1}}
 .mast.small img{max-height:120px; max-width:200px}
@@ -157,7 +154,8 @@ img{max-width:100%}
 .retry{color:var(--ink); font-weight:600}
 .outdated{position:fixed; top:0; left:0; right:0; z-index:10; padding:calc(10px + env(safe-area-inset-top,0px)) 16px 10px;
   background:var(--bad-bg); color:var(--bad); text-align:center; font-size:15px}
-.outdated .linkbtn{color:inherit; padding:0; text-decoration-color:currentColor}
+/* The link sits inside a sentence here, so it drops the 44px tap-target box that .linkbtn has elsewhere. */
+.outdated .linkbtn{display:inline; min-height:0; padding:0; color:inherit; text-decoration-color:currentColor}
 
 .verdict{margin:0; font-size:20px; font-weight:700; text-align:center}
 .verdict.good{color:var(--good)}
@@ -221,12 +219,11 @@ dialog::backdrop{background:rgba(10,15,20,.45)}
   .compare .tl{font-size:14px}
   .tiles{grid-template-columns:repeat(auto-fill,minmax(44px,1fr)); gap:10px 6px}
   .tile img{max-height:26px; max-width:40px}
+  .bar{padding:8px 20px}
   .stage{padding-top:4px; padding-bottom:16px}
   .stage-inner{gap:16px}
   .mast{padding-bottom:24px}
   .mast img{max-height:min(30vh,260px); max-height:min(30svh,260px)}
-  .mast.fit-mc img{max-height:clamp(72px, calc(var(--vvh, 100svh) - 405px), min(30svh, 260px))}
-  .mast.fit-typed img{max-height:clamp(72px, calc(var(--vvh, 100svh) - 265px), min(30svh, 260px))}
   .kbd, .kbd-hint{display:none}
 }
 @media (prefers-reduced-motion: reduce){
@@ -736,13 +733,13 @@ function renderAsk(it, forceMC){
   if (mode === "mc"){
     const opts = shuffle([c].concat(distractors(c)));
     sess.opts = opts;
-    $("#stage").innerHTML = `${tag}${forceMC ? "" : mastHTML(c, "fit-mc")}
-      ${forceMC ? `<div class="mast fit-mc">${img(c, "Flag to identify")}</div>` : ""}
+    $("#stage").innerHTML = `${tag}${forceMC ? "" : mastHTML(c, "fit")}
+      ${forceMC ? `<div class="mast fit">${img(c, "Flag to identify")}</div>` : ""}
       <p class="prompt">Which country?</p>
       <div class="choices">${opts.map((o, i) => `<button class="choice" type="button" data-pick="${o}"><span class="n">${i+1}</span><span>${esc(BY[o].n)}</span></button>`).join("")}</div>`;
     focusMain();
   } else {
-    $("#stage").innerHTML = `${tag}${mastHTML(c, "fit-typed")}
+    $("#stage").innerHTML = `${tag}${mastHTML(c, "fit")}
       <form class="typed" id="typedForm" autocomplete="off">
         <label class="sr" for="answer">Country name</label>
         <div class="typed-row">
@@ -760,6 +757,22 @@ function renderAsk(it, forceMC){
     inp.addEventListener("input", () => { if (sess && sess.firstKey == null) sess.firstKey = performance.now() - sess.t0; });
     inp.focus({preventScroll: true});
   }
+  $(".stage").scrollTop = 0;
+  fitFlag();
+  const im = $("#stage .mast.fit img");
+  if (!im.complete) im.addEventListener("load", fitFlag, {once: true});   // its size isn't known until it loads
+}
+// Shrinks the question's flag (to no less than 56px tall) until the last answer, or the text box, is inside the
+// visible stage: on small phones, or above the on-screen keyboard. It measures rather than assumes, so tag lines,
+// answers that wrap and the retype note all count. Links below the text box may still need a scroll.
+function fitFlag(){
+  const im = sess && $("#stage .mast.fit img"); if (!im) return;
+  const target = $("#stage .typed-row") || [...document.querySelectorAll("#stage .choice")].pop(); if (!target) return;
+  im.style.maxHeight = "";
+  const stage = $(".stage");
+  const bottom = target.getBoundingClientRect().bottom - stage.getBoundingClientRect().top + stage.scrollTop;   // within the stage's content
+  const over = bottom + 4 - stage.clientHeight;
+  if (over > 0) im.style.maxHeight = Math.max(56, im.getBoundingClientRect().height - over) + "px";
 }
 function focusMain(){ const b = $("#stage .choice, #stage [data-act=next]"); if (b) b.focus({preventScroll: true}); }
 
@@ -783,6 +796,7 @@ function submitTyped(){
     const note = $("#typedNote");
     note.textContent = "That’s close to more than one country. Check the spelling.";
     note.classList.remove("hidden");
+    fitFlag();
     inp.select();
     return;
   }
@@ -943,16 +957,19 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) refr
 
 /* ---------- Phones: the visible part of the screen ---------- */
 // On phones the on-screen keyboard covers part of the page without resizing it. --vvh and --vvtop follow the
-// part that's actually visible, so the session and its flag fit there (see .session and .mast.fit-* in the CSS).
-// Skipped while pinch-zoomed, so zooming in still makes things bigger instead of reflowing them.
+// part that's actually visible, so the session fits there (see .session in the CSS), and fitFlag() re-fits the
+// question. Only #session reads them, so they're set there, and only when they change. While pinch-zoomed the
+// last values are kept, so zooming in enlarges the screen as it is instead of reflowing it.
 function trackVisibleArea(){
   const vv = window.visualViewport; if (!vv) return;
-  const root = document.documentElement.style;
-  const fit = () => {
-    if (Math.abs(vv.scale - 1) > 0.01){ root.removeProperty("--vvh"); root.removeProperty("--vvtop"); return; }
-    root.setProperty("--vvh", vv.height + "px"); root.setProperty("--vvtop", vv.offsetTop + "px");
+  const style = $("#session").style; let last = "";
+  const update = () => {
+    if (Math.abs(vv.scale - 1) > 0.01) return;
+    const now = vv.height + "," + vv.offsetTop; if (now === last) return; last = now;
+    style.setProperty("--vvh", vv.height + "px"); style.setProperty("--vvtop", vv.offsetTop + "px");
+    fitFlag();
   };
-  vv.addEventListener("resize", fit); vv.addEventListener("scroll", fit); fit();
+  vv.addEventListener("resize", update); vv.addEventListener("scroll", update); update();
 }
 
 applyTheme();
