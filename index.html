@@ -37,6 +37,8 @@ html{height:100%; scroll-padding-top:env(safe-area-inset-top,0px)}
 body{margin:0; min-height:100%; background:var(--bg); color:var(--ink); font-family:var(--font);
   font-size:16px; line-height:1.5; -webkit-font-smoothing:antialiased; font-variant-numeric:tabular-nums}
 button{font:inherit; color:inherit}
+/* No double-tap zoom on controls, so quick taps on answers register as taps. Pinch zoom still works. */
+button, input, label{touch-action:manipulation}
 img{max-width:100%}
 :focus-visible{outline:2px solid var(--accent); outline-offset:3px}
 .hidden{display:none !important}
@@ -45,14 +47,26 @@ img{max-width:100%}
 /* Flags: crisp edges, a hairline so white flags read on any background */
 .flag{display:block; filter:drop-shadow(0 0 .6px var(--flag-edge)) drop-shadow(0 3px 8px var(--flag-shadow))}
 
+/* Hover effects only with a real pointer: on touch screens they stay stuck on after a tap.
+   Kept before the state rules below (.choice.right and so on) so those win. */
+@media (hover:hover){
+  .linkbtn:hover{color:var(--ink)}
+  .btn-primary:hover{filter:brightness(1.15)}
+  .btn-quiet:hover{filter:brightness(.97)}
+  .tile:hover{background:var(--surface-2)}
+  .close:hover{background:var(--surface-2); color:var(--ink)}
+  .choice:hover{border-color:var(--ink)}
+  button.alike:hover{color:var(--ink)}
+}
+
 /* ---------- Home ---------- */
 .home{max-width:980px; margin:0 auto; padding:28px 24px 64px}
 .top{display:flex; align-items:baseline; justify-content:space-between; gap:16px}
 .wordmark{margin:0; font-size:28px; line-height:1; font-weight:820; font-stretch:122%; letter-spacing:-.01em}
-.linkbtn{background:none; border:0; padding:6px 2px; color:var(--muted); cursor:pointer; text-decoration:underline; text-underline-offset:3px; text-decoration-color:var(--line)}
-.linkbtn:hover{color:var(--ink)}
+.linkbtn{background:none; border:0; padding:6px 2px; min-height:44px; display:inline-flex; align-items:center; color:var(--muted); cursor:pointer; text-decoration:underline; text-underline-offset:3px; text-decoration-color:var(--line)}
 
-.today{margin-top:40px; display:grid; gap:22px}
+/* minmax(0,1fr): without it the row of flags below widens the column past the screen on phones */
+.today{margin-top:40px; display:grid; grid-template-columns:minmax(0,1fr); gap:22px}
 .halyard{position:relative; padding-top:6px; min-height:88px}
 .halyard::before{content:""; position:absolute; left:0; right:0; top:6px; height:1.5px; background:var(--pole); border-radius:1px}
 .hoist-row{display:flex; gap:14px; flex-wrap:nowrap; overflow:hidden; padding:0 2px}
@@ -67,17 +81,15 @@ img{max-width:100%}
 .actions{display:flex; flex-wrap:wrap; gap:12px; align-items:center}
 .btn{appearance:none; border:0; border-radius:10px; padding:13px 22px; font-weight:650; cursor:pointer; font-size:16px}
 .btn-primary{background:var(--ink); color:var(--bg)}
-.btn-primary:hover{filter:brightness(1.15)}
 .btn-quiet{background:var(--surface-2); color:var(--ink)}
-.btn-quiet:hover{filter:brightness(.97)}
 .kbd{display:inline-block; margin-left:10px; font-size:12px; font-weight:500; opacity:.7}
 
 .wall{margin-top:64px}
 .wall-head{display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:8px 24px; border-bottom:1.5px solid var(--ink); padding-bottom:10px}
 .wall-head h2{margin:0; font-size:20px; font-weight:780; font-stretch:115%}
 .wall-head p{margin:0; color:var(--muted); font-size:15px}
-.legend{display:flex; gap:18px; margin:14px 0 0; padding:0; list-style:none; color:var(--muted); font-size:14px}
-.legend li{display:flex; align-items:center; gap:7px}
+.legend{display:flex; flex-wrap:wrap; gap:8px 18px; margin:14px 0 0; padding:0; list-style:none; color:var(--muted); font-size:14px}
+.legend li{display:flex; align-items:center; gap:7px; white-space:nowrap}
 .legend img{height:14px; width:auto}
 .legend .l-new img{filter:grayscale(1); opacity:.28}
 .legend .l-learn img{opacity:.55}
@@ -87,17 +99,17 @@ img{max-width:100%}
 .region-head span{color:var(--muted); font-size:14px}
 .tiles{display:grid; grid-template-columns:repeat(auto-fill,minmax(52px,1fr)); gap:14px 10px}
 .tile{appearance:none; background:none; border:0; padding:4px; height:44px; display:flex; align-items:center; justify-content:center; cursor:pointer; border-radius:6px}
-.tile:hover{background:var(--surface-2)}
 .tile img{max-height:30px; max-width:46px; width:auto; height:auto}
 .tile.is-new img{filter:grayscale(1); opacity:.24}
 .tile.is-learning img{opacity:.6}
 
 /* ---------- Session ---------- */
-.session{position:fixed; inset:0; display:flex; flex-direction:column; background:var(--bg);
+/* --vvh and --vvtop are the part of the screen that's actually visible (above the on-screen keyboard on phones),
+   set on #session by trackVisibleArea() in the script. Without them the session fills the whole window. */
+.session{position:fixed; top:var(--vvtop,0px); left:0; right:0; height:var(--vvh,100%); display:flex; flex-direction:column; background:var(--bg);
   padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px)}
 .bar{display:flex; align-items:center; gap:16px; padding:14px 20px; max-width:980px; width:100%; margin:0 auto}
-.close{appearance:none; border:0; background:none; width:36px; height:36px; border-radius:50%; cursor:pointer; color:var(--muted); font-size:22px; line-height:1}
-.close:hover{background:var(--surface-2); color:var(--ink)}
+.close{appearance:none; border:0; background:none; width:44px; height:44px; flex:0 0 auto; border-radius:50%; cursor:pointer; color:var(--muted); font-size:22px; line-height:1}
 .progress{flex:1; height:4px; background:var(--surface-2); border-radius:2px; overflow:hidden}
 .progress i{display:block; height:100%; width:0; background:var(--ink); transition:width .25s ease}
 .count{color:var(--muted); font-size:14px; min-width:64px; text-align:right}
@@ -110,7 +122,8 @@ img{max-width:100%}
 .mast{position:relative; padding-left:16px; padding-top:14px; padding-bottom:36px; align-self:center}
 .mast::before{content:""; position:absolute; left:0; top:4px; bottom:0; width:4px; border-radius:2px; background:linear-gradient(90deg, var(--pole), color-mix(in srgb, var(--pole) 70%, var(--bg)))}
 .mast::after{content:""; position:absolute; left:-3px; top:0; width:10px; height:10px; border-radius:50%; background:var(--pole)}
-.mast img{max-height:min(38vh,340px); max-width:min(560px, calc(100vw - 80px)); width:auto; height:auto}
+/* In questions (.mast.fit), fitFlag() in the script lowers this further when needed so the whole question fits. */
+.mast img{max-height:min(38vh,340px); max-height:min(38svh,340px); max-width:min(560px, calc(100vw - 80px)); width:auto; height:auto}
 .mast.raise img{animation:raise .32s cubic-bezier(.2,.8,.3,1)}
 @keyframes raise{from{transform:translateY(26px); opacity:0} to{transform:none; opacity:1}}
 .mast.small img{max-height:120px; max-width:200px}
@@ -124,7 +137,6 @@ img{max-width:100%}
 
 .choices{display:grid; grid-template-columns:1fr 1fr; gap:12px; width:100%}
 .choice{appearance:none; text-align:left; border:1.5px solid var(--line); background:var(--surface); border-radius:12px; padding:14px 16px; font-size:17px; font-weight:560; cursor:pointer; display:flex; gap:12px; align-items:center; min-height:58px}
-.choice:hover{border-color:var(--ink)}
 .choice .n{flex:0 0 auto; width:24px; height:24px; border-radius:6px; background:var(--surface-2); color:var(--muted); font-size:13px; display:grid; place-items:center; font-weight:600}
 .choice.right{border-color:var(--good); background:var(--good-bg); color:var(--good)}
 .choice.wrong{border-color:var(--bad); background:var(--bad-bg); color:var(--bad)}
@@ -142,7 +154,8 @@ img{max-width:100%}
 .retry{color:var(--ink); font-weight:600}
 .outdated{position:fixed; top:0; left:0; right:0; z-index:10; padding:calc(10px + env(safe-area-inset-top,0px)) 16px 10px;
   background:var(--bad-bg); color:var(--bad); text-align:center; font-size:15px}
-.outdated .linkbtn{color:inherit; padding:0; text-decoration-color:currentColor}
+/* The link sits inside a sentence here, so it drops the 44px tap-target box that .linkbtn has elsewhere. */
+.outdated .linkbtn{display:inline; min-height:0; padding:0; color:inherit; text-decoration-color:currentColor}
 
 .verdict{margin:0; font-size:20px; font-weight:700; text-align:center}
 .verdict.good{color:var(--good)}
@@ -155,8 +168,8 @@ img{max-width:100%}
 .compare .side.answer .nm{color:var(--good)}
 .compare .side.guess .nm{color:var(--bad)}
 .compare .tl{font-size:15px; margin:0; max-width:30ch}
-.compare .mast{height:calc(min(22vh,170px) + 34px); align-self:center}
-.compare .mast img{max-height:min(22vh,170px); max-width:min(280px, calc(50vw - 60px))}
+.compare .mast{height:calc(min(22vh,170px) + 34px); height:calc(min(22svh,170px) + 34px); align-self:center}
+.compare .mast img{max-height:min(22vh,170px); max-height:min(22svh,170px); max-width:min(280px, calc(50vw - 60px))}
 
 .alikes{width:100%; display:grid; gap:10px; justify-items:center}
 .alikes p{margin:0; font-size:14px; color:var(--muted)}
@@ -166,7 +179,6 @@ img{max-width:100%}
 .dlg .alikes{justify-items:start}
 .dlg .alike-row{justify-content:flex-start}
 button.alike{cursor:pointer}
-button.alike:hover{color:var(--ink)}
 
 .summary{max-width:640px; margin:0 auto; padding:56px 24px; display:grid; gap:26px}
 .summary h2{margin:0; font-size:34px; font-weight:820; font-stretch:120%; line-height:1.05}
@@ -177,7 +189,7 @@ button.alike:hover{color:var(--ink)}
 .mixup .vs{color:var(--muted); font-size:14px}
 
 /* ---------- Dialogs ---------- */
-dialog{border:0; border-radius:18px; padding:0; background:var(--surface); color:var(--ink); width:min(520px, calc(100vw - 32px)); max-height:calc(100vh - 48px)}
+dialog{border:0; border-radius:18px; padding:0; background:var(--surface); color:var(--ink); width:min(520px, calc(100vw - 32px)); max-height:calc(100vh - 48px); max-height:calc(100dvh - 48px)}
 dialog::backdrop{background:rgba(10,15,20,.45)}
 .dlg{padding:26px 26px 24px; display:grid; gap:18px}
 .dlg-top{display:flex; justify-content:space-between; align-items:center}
@@ -189,10 +201,10 @@ dialog::backdrop{background:rgba(10,15,20,.45)}
 .seg{display:flex; gap:8px; flex-wrap:wrap}
 .seg label{position:relative}
 .seg input{position:absolute; opacity:0; inset:0}
-.seg span{display:block; padding:9px 16px; border-radius:9px; background:var(--surface-2); cursor:pointer; font-weight:600}
+.seg span{display:block; min-width:44px; text-align:center; padding:11px 16px; border-radius:9px; background:var(--surface-2); cursor:pointer; font-weight:600}
 .seg input:checked + span{background:var(--ink); color:var(--bg)}
 .seg input:focus-visible + span{outline:2px solid var(--accent); outline-offset:2px}
-.check{display:flex; gap:10px; align-items:center; cursor:pointer}
+.check{display:flex; gap:10px; align-items:center; min-height:44px; cursor:pointer}
 .check input{width:18px; height:18px; accent-color:var(--ink)}
 .note{margin:0; color:var(--muted); font-size:14px}
 .danger{color:var(--bad)}
@@ -201,15 +213,17 @@ dialog::backdrop{background:rgba(10,15,20,.45)}
   .home{padding:20px 18px 56px}
   .today{margin-top:28px}
   .lead{font-size:20px}
-  .choices{grid-template-columns:1fr}
-  .choice{min-height:52px; padding:12px 14px}
+  .choices{grid-template-columns:1fr; gap:8px}
+  .choice{min-height:48px; padding:10px 14px}
   .compare{gap:12px}
   .compare .tl{font-size:14px}
   .tiles{grid-template-columns:repeat(auto-fill,minmax(44px,1fr)); gap:10px 6px}
   .tile img{max-height:26px; max-width:40px}
-  .stage{padding-top:4px}
+  .bar{padding:8px 20px}
+  .stage{padding-top:4px; padding-bottom:16px}
   .stage-inner{gap:16px}
-  .mast img{max-height:min(30vh,260px)}
+  .mast{padding-bottom:24px}
+  .mast img{max-height:min(30vh,260px); max-height:min(30svh,260px)}
   .kbd, .kbd-hint{display:none}
 }
 @media (prefers-reduced-motion: reduce){
@@ -719,13 +733,13 @@ function renderAsk(it, forceMC){
   if (mode === "mc"){
     const opts = shuffle([c].concat(distractors(c)));
     sess.opts = opts;
-    $("#stage").innerHTML = `${tag}${forceMC ? "" : mastHTML(c)}
-      ${forceMC ? `<div class="mast">${img(c, "Flag to identify")}</div>` : ""}
+    $("#stage").innerHTML = `${tag}${forceMC ? "" : mastHTML(c, "fit")}
+      ${forceMC ? `<div class="mast fit">${img(c, "Flag to identify")}</div>` : ""}
       <p class="prompt">Which country?</p>
       <div class="choices">${opts.map((o, i) => `<button class="choice" type="button" data-pick="${o}"><span class="n">${i+1}</span><span>${esc(BY[o].n)}</span></button>`).join("")}</div>`;
     focusMain();
   } else {
-    $("#stage").innerHTML = `${tag}${mastHTML(c)}
+    $("#stage").innerHTML = `${tag}${mastHTML(c, "fit")}
       <form class="typed" id="typedForm" autocomplete="off">
         <label class="sr" for="answer">Country name</label>
         <div class="typed-row">
@@ -743,6 +757,22 @@ function renderAsk(it, forceMC){
     inp.addEventListener("input", () => { if (sess && sess.firstKey == null) sess.firstKey = performance.now() - sess.t0; });
     inp.focus({preventScroll: true});
   }
+  $(".stage").scrollTop = 0;
+  fitFlag();
+  const im = $("#stage .mast.fit img");
+  if (!im.complete) im.addEventListener("load", fitFlag, {once: true});   // its size isn't known until it loads
+}
+// Shrinks the question's flag (to no less than 56px tall) until the last answer, or the text box, is inside the
+// visible stage: on small phones, or above the on-screen keyboard. It measures rather than assumes, so tag lines,
+// answers that wrap and the retype note all count. Links below the text box may still need a scroll.
+function fitFlag(){
+  const im = sess && $("#stage .mast.fit img"); if (!im) return;
+  const target = $("#stage .typed-row") || [...document.querySelectorAll("#stage .choice")].pop(); if (!target) return;
+  im.style.maxHeight = "";
+  const stage = $(".stage");
+  const bottom = target.getBoundingClientRect().bottom - stage.getBoundingClientRect().top + stage.scrollTop;   // within the stage's content
+  const over = bottom + 4 - stage.clientHeight;
+  if (over > 0) im.style.maxHeight = Math.max(56, im.getBoundingClientRect().height - over) + "px";
 }
 function focusMain(){ const b = $("#stage .choice, #stage [data-act=next]"); if (b) b.focus({preventScroll: true}); }
 
@@ -766,6 +796,7 @@ function submitTyped(){
     const note = $("#typedNote");
     note.textContent = "That’s close to more than one country. Check the spelling.";
     note.classList.remove("hidden");
+    fitFlag();
     inp.select();
     return;
   }
@@ -924,7 +955,25 @@ function refresh(){ reload(); applyTheme(); if (!document.hidden && !sess && !$(
 window.addEventListener("storage", e => { if (e.key === KEY || e.key === null) refresh(); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 
+/* ---------- Phones: the visible part of the screen ---------- */
+// On phones the on-screen keyboard covers part of the page without resizing it. --vvh and --vvtop follow the
+// part that's actually visible, so the session fits there (see .session in the CSS), and fitFlag() re-fits the
+// question. Only #session reads them, so they're set there, and only when they change. While pinch-zoomed the
+// last values are kept, so zooming in enlarges the screen as it is instead of reflowing it.
+function trackVisibleArea(){
+  const vv = window.visualViewport; if (!vv) return;
+  const style = $("#session").style; let last = "";
+  const update = () => {
+    if (Math.abs(vv.scale - 1) > 0.01) return;
+    const now = vv.height + "," + vv.offsetTop; if (now === last) return; last = now;
+    style.setProperty("--vvh", vv.height + "px"); style.setProperty("--vvtop", vv.offsetTop + "px");
+    fitFlag();
+  };
+  vv.addEventListener("resize", update); vv.addEventListener("scroll", update); update();
+}
+
 applyTheme();
+trackVisibleArea();
 buildWall();
 document.querySelectorAll("#legend [data-sw]").forEach(el => el.innerHTML = img("mu", ""));
 renderHome();
