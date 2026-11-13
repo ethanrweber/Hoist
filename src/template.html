@@ -159,6 +159,8 @@ img{max-width:100%}
 .alike-row{display:flex; flex-wrap:wrap; justify-content:center; gap:16px 18px}
 .alike{display:flex; flex-direction:column; align-items:center; gap:6px; font-size:13px; color:var(--muted); background:none; border:0; padding:0; text-align:center; max-width:96px}
 .alike img{height:38px; width:auto; max-width:90px}
+.dlg .alikes{justify-items:start}
+.dlg .alike-row{justify-content:flex-start}
 button.alike{cursor:pointer}
 button.alike:hover{color:var(--ink)}
 
@@ -257,11 +259,14 @@ dialog::backdrop{background:rgba(10,15,20,.45)}
   <form class="dlg" method="dialog" id="settingsForm">
     <div class="dlg-top"><h2>Settings</h2><button class="close" value="close" aria-label="Close settings">&times;</button></div>
     <div class="field">
-      <span>New flags per day</span>
-      <div class="seg" id="perDay"></div>
+      <span id="perDayLabel">New flags per day</span>
+      <div class="seg" id="perDay" role="radiogroup" aria-labelledby="perDayLabel"></div>
+    </div>
+    <div class="field">
+      <span id="themeLabel">Theme</span>
+      <div class="seg" id="theme" role="radiogroup" aria-labelledby="themeLabel"></div>
     </div>
     <label class="check"><input type="checkbox" id="kosovo"> Include Kosovo (makes it 197)</label>
-    <label class="check"><input type="checkbox" id="darkToggle"> Always use dark theme</label>
     <div class="field">
       <span>Progress</span>
       <p class="note">Your progress is saved in this browser only.</p>
@@ -274,163 +279,48 @@ dialog::backdrop{background:rgba(10,15,20,.45)}
 /*__DATA__*/
 </script>
 <script>
+/*__CORE__*/
+</script>
+<script>
 (function(){
 "use strict";
 const KEY = "hoist.v1";
 const REGIONS = ["Africa","Americas","Asia","Europe","Oceania"];
-const BY = {}; COUNTRIES.forEach(c => BY[c.c] = c);
-const SIB = {}; FAMILIES.forEach(f => f.forEach(c => SIB[c] = f.filter(x => x !== c)));
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[ch]));
 
 /* ---------- Storage ---------- */
-function blankState(){ return {v:1, cards:{}, day:{n:0,newDone:0,bonus:0}, settings:{perDay:10,kosovo:false,dark:false}, confusions:{}}; }
+// Progress lives under one localStorage key, and other tabs may save it too. So the page reloads it when
+// another tab saves and whenever the page is shown again (see Events), instead of writing back a stale copy.
 let S;
-try { S = JSON.parse(localStorage.getItem(KEY)) || blankState(); } catch(e){ S = blankState(); }
-S = Object.assign(blankState(), S);
-S.settings = Object.assign(blankState().settings, S.settings);
-function save(){ try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e){} }
+let saveFailed = false;
+function load(){ try { return HoistCore.migrate(JSON.parse(localStorage.getItem(KEY))); } catch(e){ return HoistCore.blankState(); } }
+function save(){ try { localStorage.setItem(KEY, JSON.stringify(S)); saveFailed = false; } catch(e){ saveFailed = true; } }
+// Skipped while saving fails (private mode, full storage), so progress that exists only in this page isn't dropped.
+function reload(){ if (!saveFailed) S = load(); }
+S = load();
 
-/* ---------- Dates: a "day" rolls over at 4am local time ---------- */
-function dayNum(){ const d = new Date(Date.now() - 4*3600e3); return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 864e5); }
-function rollDay(){ const t = dayNum(); if (S.day.n !== t){ S.day = {n:t,newDone:0,bonus:0}; save(); } }
+const {BY, dayNum, touchDay, active, isActive, card, seen, mastered, status,
+  lookalikes, distractors, planToday, judge, introduce, grade, buildQueue, shuffle} =
+  HoistCore.createCore({countries: COUNTRIES, families: FAMILIES, neighbors: NEIGHBORS}, {state: () => S});
 
-/* ---------- FSRS-4.5 scheduler ---------- */
-const W=[0.4872,1.4003,3.7145,13.8206,5.1618,1.2298,0.8975,0.031,1.6474,0.1367,1.0461,2.1072,0.0793,0.3246,1.587,0.2272,2.8755];
-const DECAY=-0.5, FACTOR=19/81, RETAIN=0.9;
-const clampD = d => Math.min(10, Math.max(1, d));
-const retr = (t, s) => Math.pow(1 + FACTOR * t / s, DECAY);
-const ivlFor = s => s / FACTOR * (Math.pow(RETAIN, 1/DECAY) - 1);
-const D0 = g => clampD(W[4] - (g - 3) * W[5]);
-function fsrs(st, g, elapsed){
-  if (!st) return {S: W[g-1], D: D0(g)};
-  const r = retr(elapsed, st.S);
-  let D = st.D - W[6] * (g - 3); D = clampD(W[7] * D0(4) + (1 - W[7]) * D);
-  let s;
-  if (g === 1) s = Math.min(st.S, W[11] * Math.pow(st.D, -W[12]) * (Math.pow(st.S + 1, W[13]) - 1) * Math.exp(W[14] * (1 - r)));
-  else s = st.S * (1 + Math.exp(W[8]) * (11 - st.D) * Math.pow(st.S, -W[9]) * (Math.exp(W[10] * (1 - r)) - 1) * (g === 2 ? W[15] : 1));
-  return {S: Math.max(0.1, s), D};
-}
-
-/* ---------- Helpers ---------- */
+/* ---------- Flags ---------- */
+// Each SVG becomes a blob: URL once, so <img> tags carry a short link instead of the whole file.
 const urlCache = {};
-function src(c){ return urlCache[c] || (urlCache[c] = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(FLAGS[c])); }
+function src(c){ return urlCache[c] || (urlCache[c] = URL.createObjectURL(new Blob([FLAGS[c]], {type: "image/svg+xml"}))); }
 function img(c, alt){ return `<img class="flag" src="${src(c)}" alt="${esc(alt == null ? "Flag" : alt)}" decoding="async">`; }
-function shuffle(a){ a = a.slice(); for (let i = a.length - 1; i > 0; i--){ const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
-function active(){ return COUNTRIES.filter(c => !c.optional || S.settings.kosovo).map(c => c.c); }
-function isActive(c){ return BY[c] && (!BY[c].optional || S.settings.kosovo); }
-function card(c){ return S.cards[c]; }
-function seen(c){ return !!S.cards[c]; }
-function mastered(c){ const k = S.cards[c]; return !!k && k.stage === "typed" && k.S >= 21; }
-function status(c){ return !seen(c) ? "new" : mastered(c) ? "mastered" : "learning"; }
-function dueList(){ const t = dayNum(); return active().filter(c => seen(c) && card(c).due <= t); }
-function newAllowance(){ rollDay(); return Math.max(0, S.settings.perDay + S.day.bonus - S.day.newDone); }
-function confusedWith(c){
-  const m = {};
-  for (const k in S.confusions){ const [a,b] = k.split(">"); if (a === c) m[b] = (m[b]||0) + S.confusions[k]; else if (b === c) m[a] = (m[a]||0) + S.confusions[k]; }
-  return Object.keys(m).filter(isActive).sort((x,y) => m[y] - m[x]);
-}
-function lookalikes(c, n){
-  const out = []; const add = x => { if (x !== c && isActive(x) && !out.includes(x)) out.push(x); };
-  (SIB[c] || []).forEach(add); confusedWith(c).forEach(add);
-  if (out.length < 2) (NEIGHBORS[c] || []).slice(0, 3).forEach(add);
-  return out.slice(0, n || 5);
-}
-function distractors(c){
-  const out = []; const add = x => { if (x !== c && isActive(x) && !out.includes(x)) out.push(x); };
-  const conf = confusedWith(c);
-  if (conf[0]) add(conf[0]);
-  shuffle(SIB[c] || []).forEach(add);
-  conf.slice(1).forEach(add);
-  (NEIGHBORS[c] || []).forEach(add);
-  const pool = shuffle(active()); let i = 0;
-  while (out.length < 3 && i < pool.length) add(pool[i++]);
-  return out.slice(0, 3);
-}
-
-/* Introduction order: look-alike families come in together, mixed with stand-alone flags */
-function rng(seed){ return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
-const UNITS = (() => {
-  const r = rng(196); const sh = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--){ const j = Math.floor(r() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
-  const inFam = new Set(FAMILIES.flat());
-  const fams = sh(FAMILIES), singles = sh(COUNTRIES.map(c => c.c).filter(c => !inFam.has(c)).map(c => [c]));
-  const units = []; let s = 0;
-  for (const f of fams){ units.push(f); for (let k = 0; k < 2 && s < singles.length; k++) units.push(singles[s++]); }
-  while (s < singles.length) units.push(singles[s++]);
-  return units;
-})();
-function pickNew(n){
-  const groups = []; let left = n;
-  for (const u of UNITS){
-    if (left <= 0) break;
-    const m = u.filter(c => isActive(c) && !seen(c));
-    if (!m.length) continue;
-    if (m.length <= left + 2){ groups.push(m); left -= m.length; }
-  }
-  return groups;
-}
-
-/* ---------- Answer checking ---------- */
-function norm(s){
-  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
-    .replace(/&/g, " and ").replace(/['’`.]/g, "").replace(/[^a-z0-9]+/g, " ").trim()
-    .replace(/^the /, "").replace(/\bsaint\b/g, "st");
-}
-const NAMES = [];
-COUNTRIES.forEach(c => [c.n].concat(c.a || []).forEach(n => NAMES.push([norm(n), c.c])));
-const EXACT = new Map(NAMES);
-function lev(a, b){
-  if (Math.abs(a.length - b.length) > 3) return 9;
-  let prev = Array.from({length: b.length + 1}, (_, i) => i);
-  for (let i = 1; i <= a.length; i++){
-    const cur = [i];
-    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (a[i-1] === b[j-1] ? 0 : 1));
-    prev = cur;
-  }
-  return prev[b.length];
-}
-function judge(input, c){
-  const q = norm(input);
-  if (!q) return {empty: true};
-  const ex = EXACT.get(q);
-  if (ex && isActive(ex)) return ex === c ? {ok: true} : {ok: false, guess: ex};
-  let best = 9, hits = [];
-  for (const [n, code] of NAMES){
-    if (!isActive(code)) continue;
-    const tol = n.length <= 4 ? 0 : n.length <= 7 ? 1 : 2;
-    const d = lev(q, n);
-    if (d <= tol){ if (d < best){ best = d; hits = [code]; } else if (d === best) hits.push(code); }
-  }
-  if (hits.includes(c)) return {ok: true, typo: true};
-  if (hits.length) return {ok: false, guess: hits[0]};
-  return {ok: false};
-}
-
-/* ---------- Grading ---------- */
-function introduce(c){
-  if (seen(c)) return;
-  S.cards[c] = {stage: "mc", streak: 0, reps: 0, lapses: 0, S: 0, D: 0, last: dayNum(), due: dayNum()};
-  rollDay(); S.day.newDone++; save();
-}
-function grade(c, g){
-  const t = dayNum(); const k = S.cards[c] || (introduce(c), S.cards[c]);
-  const first = !k.reps; const elapsed = Math.max(0, t - k.last);
-  const st = fsrs(first ? null : {S: k.S, D: k.D}, g, elapsed);
-  k.S = st.S; k.D = st.D; k.reps++; k.last = t;
-  const ok = g > 1; let graduated = false;
-  if (k.stage === "mc"){ if (ok){ k.streak++; if (k.streak >= 2){ k.stage = "typed"; k.streak = 0; graduated = true; } } else k.streak = 0; }
-  else { if (ok) k.streak++; else { k.stage = "mc"; k.streak = 1; k.lapses++; } }
-  let ivl = (first || !ok) ? 1 : Math.max(1, Math.round(ivlFor(k.S) * (k.S > 3 ? 0.95 + Math.random() * 0.1 : 1)));
-  if (k.stage === "mc") ivl = Math.min(ivl, 2);   // recognition alone doesn't earn long gaps
-  if (graduated) ivl = Math.min(ivl, 3);           // first typed recall comes soon after graduating
-  k.due = t + ivl;
-  save();
+// The "Easy to mix up with" row. With `clickable`, each flag opens its detail dialog.
+function alikesHTML(list, clickable){
+  if (!list.length) return "";
+  const item = x => clickable
+    ? `<button class="alike" type="button" data-show="${x}">${img(x, "")}<span>${esc(BY[x].n)}</span></button>`
+    : `<div class="alike">${img(x, "")}<span>${esc(BY[x].n)}</span></div>`;
+  return `<div class="alikes"><p>Easy to mix up with</p><div class="alike-row">${list.map(item).join("")}</div></div>`;
 }
 
 /* ---------- Home ---------- */
 function renderHome(){
-  rollDay();
-  const due = dueList(); const nNew = Math.min(newAllowance(), pickNew(newAllowance()).flat().length);
+  const plan = planToday(), due = plan.due, nNew = plan.nNew;
   const anySeen = Object.keys(S.cards).length > 0;
   const total = active().length;
 
@@ -465,18 +355,33 @@ function renderHome(){
     acts.innerHTML = (leftToLearn ? `<button class="btn btn-primary" data-act="more" type="button">Learn 5 more flags</button>` : "")
       + (Object.values(S.cards).filter(k => k.reps).length >= 4 ? `<button class="btn btn-quiet" data-act="extra" type="button">Extra practice</button>` : "");
   }
+  updateWall(total);
+}
 
-  // The wall
+/* ---------- The wall: built once, then only each tile's status changes ---------- */
+function buildWall(){
+  $("#regions").innerHTML = REGIONS.map(r => {
+    const list = COUNTRIES.filter(c => c.r === r).sort((a,b) => a.n.localeCompare(b.n));
+    return `<section class="region"><div class="region-head"><h3>${r}</h3><span></span></div>
+      <div class="tiles">${list.map(c => `<button class="tile" type="button" data-show="${c.c}">${img(c.c, "")}</button>`).join("")}</div></section>`;
+  }).join("");
+}
+function updateWall(total){
   const m = active().filter(mastered).length, l = active().filter(c => status(c) === "learning").length;
   $("#wallTitle").textContent = `All ${total} flags`;
   $("#wallStats").textContent = `${m} mastered, ${l} learning, ${total - m - l} not started`;
-  $("#regions").innerHTML = REGIONS.map(r => {
-    const list = COUNTRIES.filter(c => c.r === r && isActive(c.c)).sort((a,b) => a.n.localeCompare(b.n));
-    const done = list.filter(c => mastered(c.c)).length;
-    return `<section class="region"><div class="region-head"><h3>${r}</h3><span>${done} of ${list.length} mastered</span></div>
-      <div class="tiles">${list.map(c => { const st = status(c.c);
-        return `<button class="tile is-${st}" type="button" data-show="${c.c}" aria-label="${esc(c.n)}, ${st === "new" ? "not started" : st}">${img(c.c, "")}</button>`; }).join("")}</div></section>`;
-  }).join("");
+  document.querySelectorAll("#regions .region").forEach(sec => {
+    let shown = 0, done = 0;
+    sec.querySelectorAll(".tile").forEach(t => {
+      const c = t.dataset.show;
+      if (!isActive(c)){ t.className = "tile hidden"; return; }
+      const st = status(c);
+      shown++; if (st === "mastered") done++;
+      t.className = `tile is-${st}`;
+      t.setAttribute("aria-label", `${BY[c].n}, ${st === "new" ? "not started" : st}`);
+    });
+    sec.querySelector(".region-head span").textContent = `${done} of ${shown} mastered`;
+  });
 }
 
 /* ---------- Detail dialog ---------- */
@@ -488,44 +393,19 @@ function showDetail(c){
     const d = k.due - t; const when = d <= 0 ? "due today" : d === 1 ? "next review tomorrow" : `next review in ${d} days`;
     line = (st === "mastered" ? "Mastered" : k.stage === "typed" ? "Learning, typing the name" : "Learning, multiple choice") + ", " + when + ".";
   }
-  const al = lookalikes(c, 5);
   $("#detailBody").innerHTML = `
     <div class="dlg-top"><h2>${esc(BY[c].n)}</h2><button class="close" type="button" data-close aria-label="Close">&times;</button></div>
     <div class="mast small">${img(c, "Flag of " + BY[c].n)}</div>
     <p class="hook">${esc(BY[c].h)}</p>
     <p class="status">${line}</p>
-    ${al.length ? `<div class="alikes" style="justify-items:start"><p>Easy to mix up with</p><div class="alike-row" style="justify-content:flex-start">${al.map(x => `<button class="alike" type="button" data-show="${x}">${img(x, "")}<span>${esc(BY[x].n)}</span></button>`).join("")}</div></div>` : ""}`;
+    ${alikesHTML(lookalikes(c, 5), true)}`;
   const dlg = $("#detail"); if (!dlg.open) dlg.showModal();
 }
 
 /* ---------- Session ---------- */
 let sess = null;
-function buildQueue(mode){
-  const t = dayNum();
-  if (mode === "extra"){
-    const pool = active().filter(c => seen(c) && card(c).reps > 0)
-      .sort((a,b) => retr(t - card(a).last, Math.max(card(a).S, .1)) - retr(t - card(b).last, Math.max(card(b).S, .1))).slice(0, 20);
-    return shuffle(pool).map(c => ({k: "ask", c, n: 1}));
-  }
-  const reviews = shuffle(dueList()).sort((a,b) => card(a).due - card(b).due).slice(0, 120);
-  const rv = shuffle(reviews).map(c => ({k: "ask", c, n: 1}));
-  const groups = pickNew(newAllowance());
-  const items = []; let pending = [];
-  for (const g of groups){
-    g.forEach(c => items.push({k: "intro", c}));
-    items.push(...shuffle(pending));
-    pending = g.map(c => ({k: "ask", c, n: 1}));
-  }
-  items.push(...shuffle(pending));
-  const out = []; const total = items.length + rv.length; let ri = 0, ii = 0;
-  for (let p = 0; p < total; p++){
-    const want = Math.round((p + 1) * rv.length / total);
-    if (ri < want || ii >= items.length) out.push(rv[ri++]); else out.push(items[ii++]);
-  }
-  return out;
-}
 function startSession(mode){
-  if (mode === "more"){ rollDay(); S.day.bonus += 5; save(); mode = "normal"; }
+  if (mode === "more"){ touchDay().bonus += 5; save(); mode = "normal"; }
   const q = buildQueue(mode);
   if (!q.length){ renderHome(); return; }
   sess = {mode, q, i: 0, graded: new Set(), tried: new Set(), first: {right: 0, total: 0}, mixups: [], busy: false};
@@ -535,6 +415,7 @@ function startSession(mode){
 }
 function endSession(){
   const s = sess; sess = null;
+  if (s) clearTimeout(s.timer);
   $("#session").classList.add("hidden");
   if (s && (s.first.total || s.mixups.length)) showSummary(s); else { $("#home").classList.remove("hidden"); renderHome(); }
 }
@@ -556,15 +437,14 @@ function next(first){
 function mastHTML(c, cls){ return `<div class="mast raise ${cls || ""}">${img(c, "Flag to identify")}</div>`; }
 
 function renderIntro(c){
-  introduce(c);
+  if (introduce(c)) save();
   sess.view = "intro";
-  const al = lookalikes(c, 5);
   $("#stage").innerHTML = `
     <p class="tag">New flag</p>
     <div class="mast raise">${img(c, "Flag of " + BY[c].n)}</div>
     <h2 class="name">${esc(BY[c].n)}</h2>
     <p class="hook">${esc(BY[c].h)}</p>
-    ${al.length ? `<div class="alikes"><p>Easy to mix up with</p><div class="alike-row">${al.map(x => `<div class="alike">${img(x, "")}<span>${esc(BY[x].n)}</span></div>`).join("")}</div></div>` : ""}
+    ${alikesHTML(lookalikes(c, 5))}
     <button class="btn btn-primary" type="button" data-act="next">Got it<span class="kbd">Enter</span></button>`;
   focusMain();
 }
@@ -598,7 +478,7 @@ function renderAsk(it, forceMC){
         <p class="hint kbd-hint">Press Enter on an empty box to see choices, or Esc if you don’t know.</p>
       </form>`;
     const inp = $("#answer");
-    inp.addEventListener("input", () => { if (sess && sess.firstKey == null) sess.firstKey = performance.now() - sess.t0; }, {once: false});
+    inp.addEventListener("input", () => { if (sess && sess.firstKey == null) sess.firstKey = performance.now() - sess.t0; });
     inp.focus({preventScroll: true});
   }
 }
@@ -610,8 +490,9 @@ function pick(o){
   const it = sess.q[sess.i], c = it.c, rt = performance.now() - sess.t0;
   const ok = o === c;
   document.querySelectorAll("#stage .choice").forEach(b => { b.disabled = true; if (b.dataset.pick === c) b.classList.add("right"); else if (b.dataset.pick === o) b.classList.add("wrong"); });
-  const g = !ok ? 1 : (sess.hint || rt > 6000) ? 2 : 3;
-  settle(it, {ok, guess: ok ? null : o, g, quick: !ok && rt < 2200 && !sess.hint});
+  // After "Show choices" on a typing question, a right pick is still a miss for scheduling, but the flag stays at typing.
+  const g = (!ok || sess.hint) ? 1 : rt > 6000 ? 2 : 3;
+  settle(it, {ok, guess: ok ? null : o, g, keepStage: ok && sess.hint, quick: !ok && rt < 2200 && !sess.hint});
 }
 function submitTyped(){
   if (!sess || sess.busy || sess.view !== "typed") return;
@@ -632,11 +513,12 @@ function dunno(){
 function settle(it, r){
   const c = it.c;
   if (!sess.tried.has(c)){ sess.tried.add(c); sess.first.total++; if (r.ok) sess.first.right++; }
-  if (sess.mode !== "extra" && !sess.graded.has(c)){ grade(c, r.g); sess.graded.add(c); }
+  if (sess.mode !== "extra" && !sess.graded.has(c)){ grade(c, r.g, {keepStage: r.keepStage}); sess.graded.add(c); }
   if (r.guess && r.guess !== c){
-    const key = c + ">" + r.guess; S.confusions[key] = (S.confusions[key] || 0) + 1; save();
+    const key = c + ">" + r.guess; S.confusions[key] = (S.confusions[key] || 0) + 1;
     sess.mixups.push([c, r.guess]);
   }
+  save();
   if (!r.ok && it.n < 3){
     const gap = r.quick ? 3 : 5;
     sess.q.splice(Math.min(sess.q.length, sess.i + 1 + gap), 0, {k: "ask", c, n: it.n + 1});
@@ -666,13 +548,12 @@ function showMiss(c, r){
         <div class="side answer"><p class="who">It’s</p><div class="mast small">${img(c, "Flag of " + ans.n)}</div><p class="nm">${esc(ans.n)}</p><p class="tl">${esc(ans.h)}</p></div>
       </div>`;
   } else {
-    const al = lookalikes(c, 4);
     body = `
       ${r.typedRaw && !r.dunno ? `<p class="tag">“${esc(r.typedRaw)}” didn’t match a country.</p>` : ""}
       <div class="mast">${img(c, "Flag of " + ans.n)}</div>
       <h2 class="name" style="color:var(--good)">${esc(ans.n)}</h2>
       <p class="hook">${esc(ans.h)}</p>
-      ${al.length ? `<div class="alikes"><p>Easy to mix up with</p><div class="alike-row">${al.map(x => `<div class="alike">${img(x, "")}<span>${esc(BY[x].n)}</span></div>`).join("")}</div></div>` : ""}`;
+      ${alikesHTML(lookalikes(c, 4))}`;
   }
   $("#stage").innerHTML = body + `<button class="btn btn-primary" type="button" data-act="next">Continue<span class="kbd">Enter</span></button>`;
   focusMain();
@@ -697,13 +578,21 @@ function showSummary(s){
 }
 
 /* ---------- Settings ---------- */
+// A row of radio buttons styled as a segmented control. options: [[value, label], ...]
+function segHTML(name, options, current){
+  return options.map(([value, label]) => `<label><input type="radio" name="${name}" value="${value}" ${String(current) === String(value) ? "checked" : ""}><span>${label}</span></label>`).join("");
+}
 function renderSettings(){
-  $("#perDay").innerHTML = [5,10,15,20].map(n => `<label><input type="radio" name="perDay" value="${n}" ${S.settings.perDay === n ? "checked" : ""}><span>${n}</span></label>`).join("");
+  $("#perDay").innerHTML = segHTML("perDay", [5,10,15,20].map(n => [n, n]), S.settings.perDay);
+  $("#theme").innerHTML = segHTML("theme", [["system","System"],["light","Light"],["dark","Dark"]], S.settings.theme);
   $("#kosovo").checked = !!S.settings.kosovo;
-  $("#darkToggle").checked = !!S.settings.dark;
   const rb = $("#resetBtn"); rb.textContent = "Reset all progress"; rb.dataset.armed = "";
 }
-function applyTheme(){ if (S.settings.dark) document.documentElement.setAttribute("data-theme", "dark"); else document.documentElement.removeAttribute("data-theme"); }
+function applyTheme(){
+  const t = S.settings.theme;
+  if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+  else document.documentElement.removeAttribute("data-theme");
+}
 
 /* ---------- Events ---------- */
 document.addEventListener("click", e => {
@@ -744,20 +633,24 @@ $("#endSession").addEventListener("click", endSession);
 $("#openSettings").addEventListener("click", () => { renderSettings(); $("#settings").showModal(); });
 $("#settingsForm").addEventListener("change", e => {
   if (e.target.name === "perDay") S.settings.perDay = +e.target.value;
+  if (e.target.name === "theme"){ S.settings.theme = e.target.value; applyTheme(); }
   if (e.target.id === "kosovo") S.settings.kosovo = e.target.checked;
-  if (e.target.id === "darkToggle"){ S.settings.dark = e.target.checked; applyTheme(); }
   save(); renderHome();
 });
 $("#resetBtn").addEventListener("click", e => {
   const b = e.currentTarget;
   if (!b.dataset.armed){ b.dataset.armed = "1"; b.textContent = "Click again to erase everything"; return; }
-  const keep = S.settings; S = blankState(); S.settings = keep; save();
+  const keep = S.settings; S = HoistCore.blankState(); S.settings = keep; save();
   $("#settings").close(); renderHome();
 });
 $("#detail").addEventListener("click", e => { if (e.target === $("#detail")) $("#detail").close(); });
-document.addEventListener("visibilitychange", () => { if (!document.hidden && !sess && !$("#home").classList.contains("hidden")) renderHome(); });
+// Pick up progress saved by other tabs, so this page never writes an older copy over it.
+function refresh(){ reload(); applyTheme(); if (!sess && !$("#home").classList.contains("hidden")) renderHome(); }
+window.addEventListener("storage", e => { if (e.key === KEY || e.key === null) refresh(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 
 applyTheme();
+buildWall();
 document.querySelectorAll("#legend [data-sw]").forEach(el => el.innerHTML = img("mu", ""));
 renderHome();
 })();

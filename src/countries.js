@@ -49,7 +49,7 @@ const COUNTRIES = [
   {c:"dk",n:"Denmark",r:"Europe",h:"A white Nordic cross on red."},
   {c:"dj",n:"Djibouti",r:"Africa",h:"Light blue over green with a white triangle and a red star."},
   {c:"dm",n:"Dominica",r:"Americas",h:"Green with a yellow-black-white cross and a parrot in a red disc."},
-  {c:"do",n:"Dominican Republic",r:"Americas",h:"A white cross splitting blue and red squares, coat of arms in the center."},
+  {c:"do",n:"Dominican Republic",a:["Dominican"],r:"Americas",h:"A white cross splitting blue and red squares, coat of arms in the center."},
   {c:"ec",n:"Ecuador",r:"Americas",h:"Colombia's yellow-blue-red, plus a coat of arms with a condor."},
   {c:"eg",n:"Egypt",r:"Africa",h:"Red-white-black with a golden eagle in the middle."},
   {c:"sv",n:"El Salvador",a:["Salvador"],r:"Americas",h:"Blue-white-blue; the emblem is wrapped in a green wreath with flags behind it."},
@@ -197,7 +197,7 @@ const COUNTRIES = [
   {c:"zm",n:"Zambia",r:"Africa",h:"Green with an orange eagle above red, black and orange bars."},
   {c:"zw",n:"Zimbabwe",r:"Africa",h:"Green-yellow-red-black stripes with a white triangle holding a bird."},
   {c:"xk",n:"Kosovo",r:"Europe",optional:true,h:"Blue with a gold map and six white stars (Cyprus's map is copper on white)."}
-].filter(x => !x.skip);
+];
 
 // Look-alike families: introduced together, used as multiple-choice distractors and side-by-side comparisons.
 const FAMILIES = [
