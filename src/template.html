@@ -139,6 +139,10 @@ img{max-width:100%}
 .typed input.wrong{border-color:var(--bad); background:var(--bad-bg); color:var(--bad)}
 .typed-help{display:flex; gap:22px; justify-content:center; flex-wrap:wrap}
 .hint{font-size:14px; color:var(--muted); text-align:center; margin:0}
+.retry{color:var(--ink); font-weight:600}
+.outdated{position:fixed; top:0; left:0; right:0; z-index:10; padding:calc(10px + env(safe-area-inset-top,0px)) 16px 10px;
+  background:var(--bad-bg); color:var(--bad); text-align:center; font-size:15px}
+.outdated .linkbtn{color:inherit; padding:0; text-decoration-color:currentColor}
 
 .verdict{margin:0; font-size:20px; font-weight:700; text-align:center}
 .verdict.good{color:var(--good)}
@@ -215,6 +219,8 @@ dialog::backdrop{background:rgba(10,15,20,.45)}
 </style>
 </head>
 <body>
+
+<div id="outdated" class="outdated hidden" role="alert">Hoist was updated in another tab. <button class="linkbtn" type="button" data-act="reload">Reload this page</button> to keep saving progress.</div>
 
 <main id="home" class="home" aria-labelledby="wm">
   <header class="top">
@@ -294,8 +300,17 @@ const esc = s => String(s).replace(/[&<>"]/g, ch => ({"&":"&amp;","<":"&lt;",">"
 // another tab saves and whenever the page is shown again (see Events), instead of writing back a stale copy.
 let S;
 let saveFailed = false;
-function load(){ try { return HoistCore.migrate(JSON.parse(localStorage.getItem(KEY))); } catch(e){ return HoistCore.blankState(); } }
-function save(){ try { localStorage.setItem(KEY, JSON.stringify(S)); saveFailed = false; } catch(e){ saveFailed = true; } }
+// True while the saved progress comes from a newer version of Hoist (open in another tab). This page then
+// shows that progress but never saves, and asks to be reloaded.
+let outdated = false;
+function load(){
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(KEY)); } catch(e){}
+  outdated = HoistCore.isNewer(saved);
+  $("#outdated").classList.toggle("hidden", !outdated);
+  return HoistCore.migrate(saved);
+}
+function save(){ if (outdated) return; try { localStorage.setItem(KEY, JSON.stringify(S)); saveFailed = false; } catch(e){ saveFailed = true; } }
 // Skipped while saving fails (private mode, full storage), so progress that exists only in this page isn't dropped.
 function reload(){ if (!saveFailed) S = load(); }
 S = load();
@@ -471,6 +486,7 @@ function renderAsk(it, forceMC){
           <input id="answer" name="answer" type="text" placeholder="Type the country" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
           <button class="btn btn-primary" type="submit">Check</button>
         </div>
+        <p class="hint retry hidden" id="typedNote"></p>
         <div class="typed-help">
           <button class="linkbtn" type="button" data-act="hint">Show choices</button>
           <button class="linkbtn" type="button" data-act="dunno">I don’t know</button>
@@ -490,15 +506,23 @@ function pick(o){
   const it = sess.q[sess.i], c = it.c, rt = performance.now() - sess.t0;
   const ok = o === c;
   document.querySelectorAll("#stage .choice").forEach(b => { b.disabled = true; if (b.dataset.pick === c) b.classList.add("right"); else if (b.dataset.pick === o) b.classList.add("wrong"); });
-  // After "Show choices" on a typing question, a right pick is still a miss for scheduling, but the flag stays at typing.
+  // After "Show choices" on a typing question, a right pick still counts as a miss (see settle), but the flag stays at typing.
   const g = (!ok || sess.hint) ? 1 : rt > 6000 ? 2 : 3;
-  settle(it, {ok, guess: ok ? null : o, g, keepStage: ok && sess.hint, quick: !ok && rt < 2200 && !sess.hint});
+  settle(it, {ok, guess: ok ? null : o, g, hinted: ok && sess.hint, quick: !ok && rt < 2200 && !sess.hint});
 }
 function submitTyped(){
   if (!sess || sess.busy || sess.view !== "typed") return;
   const it = sess.q[sess.i], c = it.c, inp = $("#answer"); const val = inp.value;
   const r = judge(val, c);
   if (r.empty){ renderAsk(it, true); return; }
+  if (r.ambiguous){
+    // As close to another country as to the right one: ask again instead of guessing which was meant.
+    const note = $("#typedNote");
+    note.textContent = "That’s close to more than one country. Check the spelling.";
+    note.classList.remove("hidden");
+    inp.select();
+    return;
+  }
   sess.busy = true;
   const rt = performance.now() - sess.t0;
   inp.readOnly = true; inp.classList.add(r.ok ? "right" : "wrong");
@@ -512,24 +536,27 @@ function dunno(){
 }
 function settle(it, r){
   const c = it.c;
-  if (!sess.tried.has(c)){ sess.tried.add(c); sess.first.total++; if (r.ok) sess.first.right++; }
-  if (sess.mode !== "extra" && !sess.graded.has(c)){ grade(c, r.g, {keepStage: r.keepStage}); sess.graded.add(c); }
+  // r.hinted: a right pick after "Show choices". Shown as right, but it counts as a miss everywhere else.
+  const missed = !r.ok || r.hinted;
+  if (!sess.tried.has(c)){ sess.tried.add(c); sess.first.total++; if (!missed) sess.first.right++; }
+  if (sess.mode !== "extra" && !sess.graded.has(c)){ grade(c, r.g, {keepStage: r.hinted}); sess.graded.add(c); }
   if (r.guess && r.guess !== c){
     const key = c + ">" + r.guess; S.confusions[key] = (S.confusions[key] || 0) + 1;
     sess.mixups.push([c, r.guess]);
   }
   save();
-  if (!r.ok && it.n < 3){
+  if (missed && it.n < 3){
     const gap = r.quick ? 3 : 5;
     sess.q.splice(Math.min(sess.q.length, sess.i + 1 + gap), 0, {k: "ask", c, n: it.n + 1});
   }
   if (r.ok){
     const v = document.createElement("p");
-    v.className = "verdict good";
-    v.textContent = r.typo ? `Correct. It’s spelled ${BY[c].n}.` : `${BY[c].n}`;
+    v.className = r.hinted ? "verdict" : "verdict good";
+    v.textContent = r.hinted ? "Right, but using choices counts as a miss. It’ll come back."
+      : r.typo ? `Correct. It’s spelled ${BY[c].n}.` : `${BY[c].n}`;
     $("#stage").appendChild(v);
     sess.view = "done-good";
-    sess.timer = setTimeout(() => next(), r.typo ? 1500 : 650);
+    sess.timer = setTimeout(() => next(), r.hinted ? 2000 : r.typo ? 1500 : 650);
   } else {
     sess.timer = setTimeout(() => showMiss(c, r), sess.view === "mc" ? 450 : 350);
   }
@@ -608,6 +635,7 @@ document.addEventListener("click", e => {
   else if (a === "next"){ if (sess){ clearTimeout(sess.timer); next(); } }
   else if (a === "hint"){ if (sess && !sess.busy) renderAsk(sess.q[sess.i], true); }
   else if (a === "dunno") dunno();
+  else if (a === "reload") location.reload();
   else if (a === "home"){ $("#summary").classList.add("hidden"); $("#home").classList.remove("hidden"); renderHome(); window.scrollTo(0, 0); }
 });
 document.addEventListener("submit", e => { if (e.target.id === "typedForm"){ e.preventDefault(); submitTyped(); } });
@@ -645,7 +673,8 @@ $("#resetBtn").addEventListener("click", e => {
 });
 $("#detail").addEventListener("click", e => { if (e.target === $("#detail")) $("#detail").close(); });
 // Pick up progress saved by other tabs, so this page never writes an older copy over it.
-function refresh(){ reload(); applyTheme(); if (!sess && !$("#home").classList.contains("hidden")) renderHome(); }
+// A hidden page only reloads the data; visibilitychange redraws it when it's shown again.
+function refresh(){ reload(); applyTheme(); if (!document.hidden && !sess && !$("#home").classList.contains("hidden")) renderHome(); }
 window.addEventListener("storage", e => { if (e.key === KEY || e.key === null) refresh(); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 

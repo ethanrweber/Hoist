@@ -3,7 +3,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { COUNTRIES, FAMILIES } = require("../src/countries.js");
 const NEIGHBORS = require("../src/neighbors.json");
-const { createCore, blankState, migrate, VERSION, fsrs, retr, ivlFor, W } = require("../src/core.js");
+const { createCore, blankState, isNewer, migrate, VERSION, fsrs, retr, ivlFor, W } = require("../src/core.js");
 
 const DAY = 864e5;
 // A core over fresh progress, with a clock the test moves forward and fixed randomness.
@@ -38,11 +38,27 @@ test("answer checking: a typo of only the right name counts, marked as a typo", 
   assert.deepEqual(judge("Argentna", "ar"), { ok: true, typo: true });
 });
 
-test("answer checking: a typo as close to another country as to the right one is wrong", () => {
+test("answer checking: a typo as close to another country as to the right one asks for a retype", () => {
   const { judge } = setup().core;
-  assert.deepEqual(judge("Nigeri", "ne"), { ok: false, guess: "ng" });
-  assert.deepEqual(judge("Nigeri", "ng"), { ok: false, guess: "ne" });
-  assert.deepEqual(judge("Austrlia", "at"), { ok: false, guess: "au" });
+  assert.deepEqual(judge("Nigeri", "ne"), { ambiguous: true });
+  assert.deepEqual(judge("Nigeri", "ng"), { ambiguous: true });
+  assert.deepEqual(judge("Austrlia", "au"), { ambiguous: true });
+  assert.deepEqual(judge("Austrlia", "at"), { ambiguous: true });
+  // A tie between two other countries is simply wrong.
+  assert.deepEqual(judge("Nigeri", "fr"), { ok: false, guess: "ne" });
+});
+
+test("answer checking: a one-letter slip of the right name is never blamed on another country", () => {
+  const { judge } = setup().core;
+  const blamed = [];
+  for (const c of COUNTRIES){
+    if (c.optional) continue;
+    const n = c.n.toLowerCase(), slips = new Set();
+    for (let i = 0; i < n.length; i++) slips.add(n.slice(0, i) + n.slice(i + 1));                            // dropped letter
+    for (let i = 0; i < n.length - 1; i++) slips.add(n.slice(0, i) + n[i + 1] + n[i] + n.slice(i + 2));       // swapped letters
+    for (const s of slips) if (s !== n && judge(s, c.c).guess) blamed.push(`${s} (${c.c} -> ${judge(s, c.c).guess})`);
+  }
+  assert.deepEqual(blamed, []);
 });
 
 test("answer checking: Kosovo only counts as an answer when it's switched on", () => {
@@ -120,6 +136,13 @@ test("saved progress: version 1 saves are upgraded and gaps filled in", () => {
   assert.deepEqual(s.cards, cards);
   assert.deepEqual(s.confusions, { "td>ro": 2 });
   assert.equal(migrate({ v: 1, settings: { dark: false } }).settings.theme, "system");
+});
+
+test("saved progress: a save from a newer version is recognized", () => {
+  assert.equal(isNewer({ v: VERSION + 1 }), true);
+  assert.equal(isNewer({ v: VERSION }), false);
+  assert.equal(isNewer({ v: 1 }), false);
+  assert.equal(isNewer(null), false);
 });
 
 /* ---------- FSRS ---------- */
