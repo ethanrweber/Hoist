@@ -20,16 +20,20 @@ Progress is saved in your browser, so each browser or device keeps its own progr
 Everything ships as one file, `index.html`. To change it, edit the sources and rebuild:
 
 - `src/countries.js` has each country's name, accepted alternate names, region and one-line description, plus the look-alike families.
-- `src/template.html` is the app itself (HTML, CSS and JavaScript).
+- `src/core.js` holds the rules: scheduling, which flags are new each day, building a session, checking typed answers, and upgrading saved progress. It has no page code, so it can be tested in Node.
+- `src/template.html` is the page: HTML, CSS, and the JavaScript that draws screens and handles input.
 - `src/flags/` holds the flag SVGs. `src/neighbors.json` lists the most similar-looking flags for each one, used as extra wrong answers.
 
 Then run:
 
 ```
-node src/build.js
+npm run build   # or: node src/build.js
+npm test        # or: node --test
 ```
 
-This needs Node.js and nothing else. It rewrites `index.html`.
+Both need Node.js and nothing else. The build rewrites `index.html`, and stops with a list of problems if any country code in `countries.js` or `neighbors.json` doesn't match a country or a flag file.
+
+If you change what gets saved in the browser, raise `VERSION` in `src/core.js` and add an upgrade step to `UPGRADES`, so existing players' progress carries over.
 
 ## Credits
 

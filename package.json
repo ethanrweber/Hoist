@@ -4,6 +4,7 @@
   "private": true,
   "description": "Learn every flag in the world with spaced repetition.",
   "scripts": {
-    "build": "node src/build.js"
+    "build": "node src/build.js",
+    "test": "node --test"
   }
 }
