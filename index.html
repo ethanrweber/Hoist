@@ -501,6 +501,7 @@ function createCore(data, env){
     const st = fsrs(first ? null : {S: k.S, D: k.D}, g, elapsed);
     k.S = st.S; k.D = st.D; k.reps++; k.last = t;
     const ok = g > 1; let graduated = false;
+    if (!ok) k.missedOn = t;   // extra practice always brings back flags missed today
     if (k.stage === "mc"){ if (ok){ k.streak++; if (k.streak >= 2){ k.stage = "typed"; k.streak = 0; graduated = true; } } else k.streak = 0; }
     else if (ok) k.streak++;
     else { k.lapses++; if (keepStage) k.streak = 0; else { k.stage = "mc"; k.streak = 1; } }
@@ -511,13 +512,27 @@ function createCore(data, env){
   }
 
   /* ---------- Sessions ---------- */
+  // Picks up to n items from `list` at random, without repeats. An item with twice the weight is about twice
+  // as likely to be picked (Efraimidis-Spirakis sampling). Weights must be above 0.
+  function draw(list, weight, n){
+    return list.map(x => [x, Math.log(random()) / weight(x)]).sort((a,b) => b[1] - a[1]).slice(0, n).map(p => p[0]);
+  }
+  const EXTRA = 20;
+  // How likely a flag is to be forgotten by tomorrow. Tomorrow rather than today, because every flag reviewed
+  // today would read as certain: this way a shaky flag answered today still outweighs a solid one.
+  // The floor gives even well-known flags a small chance.
+  function weakness(c){ const k = card(c); return Math.max(0.01, 1 - retr(dayNum() + 1 - k.last, Math.max(k.S, .1))); }
+
   // The session's items in order: {k: "intro", c} shows a new flag, {k: "ask", c, n} asks for it (n = attempt).
   function buildQueue(mode){
     const t = dayNum();
     if (mode === "extra"){
-      const pool = active().filter(c => seen(c) && card(c).reps > 0)
-        .sort((a,b) => retr(t - card(a).last, Math.max(card(a).S, .1)) - retr(t - card(b).last, Math.max(card(b).S, .1))).slice(0, 20);
-      return shuffle(pool, random).map(c => ({k: "ask", c, n: 1}));
+      // Flags missed today always come back. The other places are drawn at random, favoring weak flags,
+      // so each round on the same day is different.
+      const pool = active().filter(c => seen(c) && card(c).reps > 0);
+      const missed = draw(pool.filter(c => card(c).missedOn === t), () => 1, EXTRA);
+      const rest = draw(pool.filter(c => card(c).missedOn !== t), weakness, EXTRA - missed.length);
+      return shuffle(missed.concat(rest), random).map(c => ({k: "ask", c, n: 1}));
     }
     const plan = planToday();
     const reviews = shuffle(plan.due, random).sort((a,b) => card(a).due - card(b).due).slice(0, 120);

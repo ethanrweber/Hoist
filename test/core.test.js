@@ -6,12 +6,12 @@ const NEIGHBORS = require("../src/neighbors.json");
 const { createCore, blankState, isNewer, migrate, VERSION, fsrs, retr, ivlFor, W } = require("../src/core.js");
 
 const DAY = 864e5;
-// A core over fresh progress, with a clock the test moves forward and fixed randomness.
-function setup(settings){
+// A core over fresh progress, with a clock the test moves forward and fixed randomness (or `random`).
+function setup(settings, random = () => 0.5){
   const t = { S: blankState(), now: Date.UTC(2026, 0, 15, 12) };
   Object.assign(t.S.settings, settings);
   t.core = createCore({ countries: COUNTRIES, families: FAMILIES, neighbors: NEIGHBORS },
-    { state: () => t.S, now: () => t.now, random: () => 0.5 });
+    { state: () => t.S, now: () => t.now, random });
   t.nextDay = () => { t.now += DAY; };
   return t;
 }
@@ -120,6 +120,66 @@ test("today's numbers: reading them never changes saved progress", () => {
   t.core.planToday(); t.core.newAllowance(); t.core.today();
   assert.equal(JSON.stringify(t.S), before);
   assert.equal(t.core.newAllowance(), 10);
+});
+
+/* ---------- Extra practice ---------- */
+// Repeatable randomness, for tests where the picks need to vary.
+function seeded(s){ return () => (s = (s * 16807) % 2147483647) / 2147483647; }
+// Plays `days` of normal sessions, answering everything right.
+function practice(t, days){
+  for (let d = 0; d < days; d++){
+    for (const it of t.core.buildQueue("normal")) if (it.k === "ask") t.core.grade(it.c, 3);
+    t.nextDay();
+  }
+}
+
+test("extra practice: rounds on the same day draw different flags, without changing progress", () => {
+  const t = setup({}, seeded(1)); practice(t, 6);
+  const before = JSON.stringify(t.S);
+  const rounds = Array.from({ length: 10 }, () => t.core.buildQueue("extra").map(it => it.c));
+  assert.equal(JSON.stringify(t.S), before);
+  for (const r of rounds) assert.equal(new Set(r).size, 20);
+  assert.ok(new Set(rounds.map(r => [...r].sort().join())).size > 1, "every round drew the same flags");
+  assert.ok(new Set(rounds.flat()).size > 30, "rounds should reach beyond one fixed set of 20");
+});
+
+test("extra practice: flags missed today come back every round, including Show choices picks", () => {
+  const t = setup({}, seeded(2)); practice(t, 6);
+  const [hinted, ...missed] = Object.keys(t.S.cards).slice(0, 5);
+  missed.forEach(c => t.core.grade(c, 1));
+  t.core.grade(hinted, 1, { keepStage: true });
+  for (let i = 0; i < 30; i++){
+    const r = t.core.buildQueue("extra").map(it => it.c);
+    for (const c of [hinted, ...missed]) assert.ok(r.includes(c), `round ${i} is missing ${c}`);
+  }
+});
+
+test("extra practice: with more than 20 flags missed today, rounds take turns among them", () => {
+  const t = setup({}, seeded(3)); practice(t, 6);
+  const missed = Object.keys(t.S.cards).slice(0, 25);
+  missed.forEach(c => t.core.grade(c, 1));
+  const shown = new Set();
+  for (let i = 0; i < 10; i++){
+    const r = t.core.buildQueue("extra").map(it => it.c);
+    assert.equal(r.length, 20);
+    assert.ok(r.every(c => missed.includes(c)), "a flag answered right took a missed flag's place");
+    r.forEach(c => shown.add(c));
+  }
+  assert.equal(shown.size, 25);
+});
+
+test("extra practice: weak flags come up more often, but strong ones still get a turn", () => {
+  const t = setup({}, seeded(4)), d = t.core.dayNum();
+  const codes = COUNTRIES.filter(c => !c.optional).map(c => c.c);
+  const weak = codes.slice(0, 30), strong = codes.slice(30, 60);
+  const card = S => ({ stage: "typed", streak: 1, reps: 3, lapses: 0, S, D: 5, last: d - 2, due: d + 2 });
+  weak.forEach(c => t.S.cards[c] = card(2));
+  strong.forEach(c => t.S.cards[c] = card(60));
+  const n = {};
+  for (let i = 0; i < 300; i++) t.core.buildQueue("extra").forEach(it => n[it.c] = (n[it.c] || 0) + 1);
+  const avg = list => list.reduce((s, c) => s + (n[c] || 0), 0) / list.length;
+  assert.ok(avg(weak) > 3 * avg(strong), `weak ${avg(weak)} vs strong ${avg(strong)} times each`);
+  assert.ok(strong.some(c => n[c]), "strong flags should still come up sometimes");
 });
 
 /* ---------- Saved progress ---------- */
