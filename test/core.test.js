@@ -27,6 +27,16 @@ test("answer checking: names, other accepted names, accents and punctuation", ()
   assert.deepEqual(judge("   ", "fr"), { empty: true });
 });
 
+test("answer checking: accented letters and curly apostrophes count the same as plain ones", () => {
+  const { judge } = setup().core;
+  assert.deepEqual(judge("Côte d’Ivoire", "ci"), { ok: true });
+  assert.deepEqual(judge("São Tomé and Príncipe", "st"), { ok: true });
+  // Accents and apostrophes that no stored name has: these match only if they're stripped.
+  assert.deepEqual(judge("São Tome", "st"), { ok: true });
+  assert.deepEqual(judge("México", "mx"), { ok: true });
+  assert.deepEqual(judge("People’s Republic of China", "cn"), { ok: true });
+});
+
 test("answer checking: another country's name is wrong, with that country as the guess", () => {
   const { judge } = setup().core;
   assert.deepEqual(judge("Romania", "td"), { ok: false, guess: "ro" });
@@ -275,6 +285,96 @@ test("saved progress: a save from a newer version is recognized", () => {
   assert.equal(isNewer({ v: VERSION }), false);
   assert.equal(isNewer({ v: 1 }), false);
   assert.equal(isNewer(null), false);
+});
+
+// What a save holds at each VERSION: the keys at the top level, in day and settings, and across all cards.
+// Earlier versions stay on record.
+const SAVED_SHAPE = {
+  2: {
+    top: ["cards", "confusions", "day", "settings", "v"],
+    day: ["bonus", "n", "newDone"],
+    settings: ["kosovo", "perDay", "theme"],
+    cards: ["D", "S", "due", "lapses", "last", "missedOn", "reps", "stage", "streak"],
+  },
+};
+// A state's keys, in the form of SAVED_SHAPE.
+function shapeOf(S){
+  const keys = o => Object.keys(o).sort();
+  return { top: keys(S), day: keys(S.day), settings: keys(S.settings), cards: [...new Set(Object.values(S.cards).flatMap(keys))].sort() };
+}
+
+test("saved progress: what gets saved matches the snapshot for this VERSION", () => {
+  // Plays through everything that writes saved progress, with Kosovo on: 20 days of sessions with right answers,
+  // hard ones and misses, a right pick after Show choices, "Learn 5 more", and extra practice.
+  const t = setup({ kosovo: true }, seeded(11)), answer = seeded(12);
+  for (let d = 0; d < 20; d++){
+    if (d === 5) t.core.touchDay().bonus += 5;
+    for (const it of t.core.buildQueue("normal")){
+      if (it.k === "ask"){ const r = answer(); t.core.grade(it.c, r < 0.15 ? 1 : r < 0.3 ? 2 : 3); }
+    }
+    const typed = Object.keys(t.S.cards).find(c => t.S.cards[c].stage === "typed");
+    if (typed) t.core.grade(typed, 1, { keepStage: true });
+    playRun(t, 20, 2);
+    t.nextDay();
+  }
+  const saved = JSON.parse(JSON.stringify(t.S));
+  // The page adds a key for each pair of flags mixed up, so only its type is checked.
+  assert.ok(saved.confusions && typeof saved.confusions === "object" && !Array.isArray(saved.confusions), "confusions should be an object");
+  const shape = shapeOf(saved);
+  assert.deepEqual(shape, SAVED_SHAPE[VERSION], `What gets saved doesn't match SAVED_SHAPE[${VERSION}] in test/core.test.js, `
+    + "or there is none. When what gets saved changes, raise VERSION in src/core.js, add an UPGRADES step there that "
+    + "turns saves from the old version into the new shape, and add a SAVED_SHAPE for the new VERSION here. "
+    + `What gets saved now:\n  ${JSON.stringify(shape)}`);
+});
+
+test("saved progress: every older version has an upgrade step", () => {
+  // From the newest down, so the first failure names the missing step.
+  for (let v = VERSION - 1; v >= 1; v--){
+    try { migrate({ v }); }
+    catch (e){
+      assert.fail(`Upgrading a version ${v} save threw "${e.message}". UPGRADES in src/core.js needs a step for every `
+        + `version from 1 to ${VERSION - 1} (UPGRADES[${v}] turns a version ${v} save into a version ${v + 1} save), and each `
+        + "step must handle saves with fields missing.");
+    }
+  }
+});
+
+test("saved progress: read-only functions never change it, even with counters left over from an earlier day", () => {
+  const t = setup({ kosovo: true }, seeded(13)); practice(t, 8);
+  // Today's misses don't touch the day counters, so those are still yesterday's.
+  const seenCodes = Object.keys(t.S.cards), [missed, hinted] = seenCodes;
+  t.core.grade(missed, 1); t.core.grade(hinted, 1, { keepStage: true });
+  t.S.confusions = { [`${missed}>fr`]: 2 };
+  // Taken before any read is called, so a read that writes shows up below.
+  const before = JSON.stringify(t.S);
+  assert.notEqual(t.S.day.n, t.core.dayNum());
+  const codes = [missed, hinted, seenCodes[2], CODES.find(c => !t.S.cards[c]), "xk"];
+  // An extra practice run two rounds in, as afterRound leaves it.
+  const run = { n: 20, skip: new Set(seenCodes.slice(0, 40)), last: new Set(seenCodes.slice(20, 40)) };
+
+  // Functions that change saved progress.
+  const WRITERS = ["touchDay", "introduce", "grade"];
+  // Every other function createCore returns, each called with realistic arguments.
+  const READS = {
+    dayNum: k => k.dayNum(), today: k => k.today(), active: k => k.active(), dueList: k => k.dueList(),
+    practiced: k => k.practiced(), newAllowance: k => k.newAllowance(), planToday: k => k.planToday(), pickNew: k => k.pickNew(10),
+    isActive: k => codes.map(c => k.isActive(c)), card: k => codes.map(c => k.card(c)), seen: k => codes.map(c => k.seen(c)),
+    mastered: k => codes.map(c => k.mastered(c)), status: k => codes.map(c => k.status(c)),
+    lookalikes: k => codes.map(c => k.lookalikes(c, 5)), distractors: k => codes.map(c => k.distractors(c)),
+    judge: k => [["Cote d'Ivoire", "ci"], ["Austrlia", "au"], ["Romania", "td"], ["", "fr"]].map(([s, c]) => k.judge(s, c)),
+    buildQueue: k => [k.buildQueue("normal"), k.buildQueue("extra"), k.buildQueue("extra", run)],
+    afterRound: k => k.afterRound(run, new Set(codes)),
+    shuffle: k => k.shuffle(codes),
+  };
+  const unsorted = Object.keys(t.core).filter(f => typeof t.core[f] === "function" && !(f in READS) && !WRITERS.includes(f));
+  assert.deepEqual(unsorted, [], `createCore returns ${unsorted.join(", ")}, which this test doesn't know about. Add each one `
+    + "to WRITERS if it can change saved progress, or to READS with a realistic call if it can't.");
+
+  for (const [f, call] of Object.entries(READS)){
+    call(t.core);
+    assert.ok(JSON.stringify(t.S) === before, `${f} changed saved progress, but it's meant to only read it: the page's next `
+      + "save would store the change. Make it leave the state alone, or if it's meant to write, move it to WRITERS.");
+  }
 });
 
 /* ---------- FSRS ---------- */
