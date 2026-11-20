@@ -83,6 +83,9 @@ img{max-width:100%}
 .btn-primary{background:var(--ink); color:var(--bg)}
 .btn-quiet{background:var(--surface-2); color:var(--ink)}
 .kbd{display:inline-block; margin-left:10px; font-size:12px; font-weight:500; opacity:.7}
+.extra{display:flex; flex-wrap:wrap; align-items:center; gap:8px}
+.extra > span{color:var(--muted); font-size:15px; margin-right:4px}
+.extra .btn{padding-left:16px; padding-right:16px; min-width:56px}
 
 .wall{margin-top:64px}
 .wall-head{display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:8px 24px; border-bottom:1.5px solid var(--ink); padding-bottom:10px}
@@ -329,8 +332,8 @@ function save(){ if (outdated) return; try { localStorage.setItem(KEY, JSON.stri
 function reload(){ if (!saveFailed) S = load(); }
 S = load();
 
-const {BY, dayNum, touchDay, active, isActive, card, seen, mastered, status,
-  lookalikes, distractors, planToday, judge, introduce, grade, buildQueue, shuffle} =
+const {BY, dayNum, touchDay, active, isActive, card, seen, mastered, status, practiced,
+  lookalikes, distractors, planToday, judge, introduce, grade, buildQueue, nextSkip, shuffle} =
   HoistCore.createCore({countries: COUNTRIES, families: FAMILIES, neighbors: NEIGHBORS}, {state: () => S});
 
 /* ---------- Flags ---------- */
@@ -381,10 +384,19 @@ function renderHome(){
     const leftToLearn = active().filter(c => !seen(c)).length;
     const when = next == null ? "" : next - dayNum() <= 1 ? " Next reviews tomorrow." : ` Next reviews in ${next - dayNum()} days.`;
     lead.innerHTML = `You’re done for today.${when}`;
+    const pool = practiced().length;
     acts.innerHTML = (leftToLearn ? `<button class="btn btn-primary" data-act="more" type="button">Learn 5 more flags</button>` : "")
-      + (Object.values(S.cards).filter(k => k.reps).length >= 4 ? `<button class="btn btn-quiet" data-act="extra" type="button">Extra practice</button>` : "");
+      + (pool >= 4 ? extraHTML(pool) : "");
   }
   updateWall(total);
+}
+// Extra practice buttons: 20 and 50 when there are more flags than that to practice, and always all of them.
+function extraHTML(pool){
+  const btn = (n, label, aria) => `<button class="btn btn-quiet" data-act="extra" data-n="${n}" type="button" aria-label="${aria}">${label}</button>`;
+  const sizes = [20, 50].filter(n => n < pool);
+  if (!sizes.length) return btn(pool, `Extra practice (${pool})`, `Extra practice, all ${pool} flags`);
+  return `<div class="extra" role="group" aria-labelledby="extraLabel"><span id="extraLabel">Extra practice</span>`
+    + sizes.map(n => btn(n, n, `${n} flags`)).join("") + btn(pool, `All ${pool}`, `All ${pool} flags`) + `</div>`;
 }
 
 /* ---------- The wall: built once, then only each tile's status changes ---------- */
@@ -433,9 +445,12 @@ function showDetail(c){
 
 /* ---------- Session ---------- */
 let sess = null;
+// The current run of extra practice: {n: flags per round, skip: flags the next round leaves out (see nextSkip)}.
+// A size button on the home screen starts a run; "Another" on the summary continues it.
+let run = null;
 function startSession(mode){
   if (mode === "more"){ touchDay().bonus += 5; save(); mode = "normal"; }
-  const q = buildQueue(mode);
+  const q = mode === "extra" ? buildQueue("extra", run) : buildQueue(mode);
   if (!q.length){ renderHome(); return; }
   sess = {mode, q, i: 0, graded: new Set(), tried: new Set(), first: {right: 0, total: 0}, mixups: [], busy: false};
   $("#home").classList.add("hidden"); $("#summary").classList.add("hidden"); $("#session").classList.remove("hidden");
@@ -445,6 +460,7 @@ function startSession(mode){
 function endSession(){
   const s = sess; sess = null;
   if (s) clearTimeout(s.timer);
+  if (s && s.mode === "extra") run.skip = nextSkip(run.skip, s.tried);
   $("#session").classList.add("hidden");
   if (s && (s.first.total || s.mixups.length)) showSummary(s); else { $("#home").classList.remove("hidden"); renderHome(); }
 }
@@ -624,13 +640,15 @@ function showSummary(s){
   const list = Object.keys(pairs).slice(0, 6);
   const lead = `${s.first.total} ${s.first.total === 1 ? "flag" : "flags"}, <strong>${s.first.right} right on the first try</strong>.`
     + (s.mode === "extra" ? " Extra practice doesn’t change your review schedule." : "");
+  const again = s.mode !== "extra" ? ""
+    : `<button class="btn btn-quiet" type="button" data-act="another">${run.n >= practiced().length ? `All ${run.n} again` : `Another ${run.n}`}</button>`;
   el.className = "summary";
   el.innerHTML = `
     <h2>${s.mode === "extra" ? "Practice done" : "Session done"}</h2>
     <p class="lead">${lead}</p>
     ${list.length ? `<div class="mixups"><p class="note">Mixed up today</p>${list.map(k => { const [a,b] = k.split(">");
       return `<div class="mixup">${img(a, "")}<span><strong>${esc(BY[a].n)}</strong></span><span class="vs">mistaken for</span>${img(b, "")}<span>${esc(BY[b].n)}</span></div>`; }).join("")}</div>` : ""}
-    <div class="actions"><button class="btn btn-primary" type="button" data-act="home">Back to my flags<span class="kbd">Enter</span></button></div>`;
+    <div class="actions"><button class="btn btn-primary" type="button" data-act="home">Back to my flags<span class="kbd">Enter</span></button>${again}</div>`;
   el.classList.remove("hidden");
   el.querySelector("[data-act=home]").focus({preventScroll: true});
 }
@@ -662,7 +680,8 @@ document.addEventListener("click", e => {
   const a = t.dataset.act;
   if (a === "start") startSession("normal");
   else if (a === "more") startSession("more");
-  else if (a === "extra") startSession("extra");
+  else if (a === "extra"){ run = {n: +t.dataset.n, skip: new Set()}; startSession("extra"); }
+  else if (a === "another") startSession("extra");
   else if (a === "next"){ if (sess){ clearTimeout(sess.timer); next(); } }
   else if (a === "hint"){ if (sess && !sess.busy) renderAsk(sess.q[sess.i], true); }
   else if (a === "dunno") dunno();

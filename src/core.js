@@ -80,6 +80,8 @@ function createCore(data, env){
   function mastered(c){ const k = card(c); return !!k && k.stage === "typed" && k.S >= 21; }
   function status(c){ return !seen(c) ? "new" : mastered(c) ? "mastered" : "learning"; }
   function dueList(){ const t = dayNum(); return active().filter(c => seen(c) && card(c).due <= t); }
+  // Flags answered at least once: the ones extra practice draws from.
+  function practiced(){ return active().filter(c => seen(c) && card(c).reps > 0); }
   function newAllowance(){ const d = today(); return Math.max(0, state().settings.perDay + d.bonus - d.newDone); }
 
   /* ---------- Look-alikes and wrong answers ---------- */
@@ -213,22 +215,34 @@ function createCore(data, env){
   function draw(list, weight, n){
     return list.map(x => [x, Math.log(random()) / weight(x)]).sort((a,b) => b[1] - a[1]).slice(0, n).map(p => p[0]);
   }
-  const EXTRA = 20;
   // How likely a flag is to be forgotten by tomorrow. Tomorrow rather than today, because every flag reviewed
   // today would read as certain: this way a shaky flag answered today still outweighs a solid one.
   // The floor gives even well-known flags a small chance.
   function weakness(c){ const k = card(c); return Math.max(0.01, 1 - retr(dayNum() + 1 - k.last, Math.max(k.S, .1))); }
+  // Up to n of `list` for extra practice: flags missed today first, then a random draw that favors weak flags.
+  function pickExtra(list, n){
+    const t = dayNum();
+    const missed = draw(list.filter(c => card(c).missedOn === t), () => 1, n);
+    return missed.concat(draw(list.filter(c => card(c).missedOn !== t), weakness, n - missed.length));
+  }
+  // Extra practice comes in runs: a round from the home screen, then any number of "Another" rounds.
+  // Returns the flags the run's next round should skip: every flag practiced so far in the run, until that
+  // covers all practiced flags. Then the run starts over, skipping only the round just done (`done`).
+  function nextSkip(skip, done){
+    const all = new Set([...skip, ...done]);
+    return practiced().every(c => all.has(c)) ? new Set(done) : all;
+  }
 
   // The session's items in order: {k: "intro", c} shows a new flag, {k: "ask", c, n} asks for it (n = attempt).
-  function buildQueue(mode){
+  // For "extra": n is the round's size, and `skip` holds flags to leave out unless there are too few others
+  // (see nextSkip). Flags missed today come first among the rest, so they come back every new run.
+  function buildQueue(mode, {n = 20, skip = new Set()} = {}){
     const t = dayNum();
     if (mode === "extra"){
-      // Flags missed today always come back. The other places are drawn at random, favoring weak flags,
-      // so each round on the same day is different.
-      const pool = active().filter(c => seen(c) && card(c).reps > 0);
-      const missed = draw(pool.filter(c => card(c).missedOn === t), () => 1, EXTRA);
-      const rest = draw(pool.filter(c => card(c).missedOn !== t), weakness, EXTRA - missed.length);
-      return shuffle(missed.concat(rest), random).map(c => ({k: "ask", c, n: 1}));
+      const pool = practiced();
+      const fresh = pickExtra(pool.filter(c => !skip.has(c)), n);
+      const picks = fresh.concat(pickExtra(pool.filter(c => skip.has(c)), n - fresh.length));
+      return shuffle(picks, random).map(c => ({k: "ask", c, n: 1}));
     }
     const plan = planToday();
     const reviews = shuffle(plan.due, random).sort((a,b) => card(a).due - card(b).due).slice(0, 120);
@@ -248,8 +262,8 @@ function createCore(data, env){
     return out;
   }
 
-  return {BY, dayNum, today, touchDay, active, isActive, card, seen, mastered, status, dueList, newAllowance,
-    lookalikes, distractors, pickNew, planToday, judge, introduce, grade, buildQueue, shuffle: a => shuffle(a, random)};
+  return {BY, dayNum, today, touchDay, active, isActive, card, seen, mastered, status, dueList, practiced, newAllowance,
+    lookalikes, distractors, pickNew, planToday, judge, introduce, grade, buildQueue, nextSkip, shuffle: a => shuffle(a, random)};
 }
 
 return {VERSION, blankState, isNewer, migrate, createCore, fsrs, retr, ivlFor, W};
