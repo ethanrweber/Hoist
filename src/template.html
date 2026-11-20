@@ -333,7 +333,7 @@ function reload(){ if (!saveFailed) S = load(); }
 S = load();
 
 const {BY, dayNum, touchDay, active, isActive, card, seen, mastered, status, practiced,
-  lookalikes, distractors, planToday, judge, introduce, grade, buildQueue, nextSkip, shuffle} =
+  lookalikes, distractors, planToday, judge, introduce, grade, buildQueue, afterRound, shuffle} =
   HoistCore.createCore({countries: COUNTRIES, families: FAMILIES, neighbors: NEIGHBORS}, {state: () => S});
 
 /* ---------- Flags ---------- */
@@ -391,12 +391,14 @@ function renderHome(){
   updateWall(total);
 }
 // Extra practice buttons: 20 and 50 when there are more flags than that to practice, and always all of them.
+// data-n is the round size, or "all". The screen-reader labels start with the visible text, so voice control
+// users can say what they see.
 function extraHTML(pool){
-  const btn = (n, label, aria) => `<button class="btn btn-quiet" data-act="extra" data-n="${n}" type="button" aria-label="${aria}">${label}</button>`;
+  const btn = (n, label, aria) => `<button class="btn btn-quiet" data-act="extra" data-n="${n}" type="button"${aria ? ` aria-label="${aria}"` : ""}>${label}</button>`;
   const sizes = [20, 50].filter(n => n < pool);
-  if (!sizes.length) return btn(pool, `Extra practice (${pool})`, `Extra practice, all ${pool} flags`);
+  if (!sizes.length) return btn("all", `Extra practice (${pool})`);
   return `<div class="extra" role="group" aria-labelledby="extraLabel"><span id="extraLabel">Extra practice</span>`
-    + sizes.map(n => btn(n, n, `${n} flags`)).join("") + btn(pool, `All ${pool}`, `All ${pool} flags`) + `</div>`;
+    + sizes.map(n => btn(n, n, `${n} flags`)).join("") + btn("all", `All ${pool}`, `All ${pool} flags`) + `</div>`;
 }
 
 /* ---------- The wall: built once, then only each tile's status changes ---------- */
@@ -445,13 +447,14 @@ function showDetail(c){
 
 /* ---------- Session ---------- */
 let sess = null;
-// The current run of extra practice: {n: flags per round, skip: flags the next round leaves out (see nextSkip)}.
-// A size button on the home screen starts a run; "Another" on the summary continues it.
+// The current run of extra practice (see afterRound in core.js). A size button on the home screen starts a run;
+// "Another" on the summary continues it.
 let run = null;
 function startSession(mode){
   if (mode === "more"){ touchDay().bonus += 5; save(); mode = "normal"; }
   const q = mode === "extra" ? buildQueue("extra", run) : buildQueue(mode);
-  if (!q.length){ renderHome(); return; }
+  // Nothing to do, say after progress was reset in another tab while this one showed the summary.
+  if (!q.length){ goHome(); return; }
   sess = {mode, q, i: 0, graded: new Set(), tried: new Set(), first: {right: 0, total: 0}, mixups: [], busy: false};
   $("#home").classList.add("hidden"); $("#summary").classList.add("hidden"); $("#session").classList.remove("hidden");
   window.scrollTo(0, 0);
@@ -460,7 +463,7 @@ function startSession(mode){
 function endSession(){
   const s = sess; sess = null;
   if (s) clearTimeout(s.timer);
-  if (s && s.mode === "extra") run.skip = nextSkip(run.skip, s.tried);
+  if (s && s.mode === "extra") run = afterRound(run, s.tried);
   $("#session").classList.add("hidden");
   if (s && (s.first.total || s.mixups.length)) showSummary(s); else { $("#home").classList.remove("hidden"); renderHome(); }
 }
@@ -641,7 +644,7 @@ function showSummary(s){
   const lead = `${s.first.total} ${s.first.total === 1 ? "flag" : "flags"}, <strong>${s.first.right} right on the first try</strong>.`
     + (s.mode === "extra" ? " Extra practice doesn’t change your review schedule." : "");
   const again = s.mode !== "extra" ? ""
-    : `<button class="btn btn-quiet" type="button" data-act="another">${run.n >= practiced().length ? `All ${run.n} again` : `Another ${run.n}`}</button>`;
+    : `<button class="btn btn-quiet" type="button" data-act="another">${run.n === Infinity ? `All ${practiced().length} again` : `Another ${run.n}`}</button>`;
   el.className = "summary";
   el.innerHTML = `
     <h2>${s.mode === "extra" ? "Practice done" : "Session done"}</h2>
@@ -680,14 +683,15 @@ document.addEventListener("click", e => {
   const a = t.dataset.act;
   if (a === "start") startSession("normal");
   else if (a === "more") startSession("more");
-  else if (a === "extra"){ run = {n: +t.dataset.n, skip: new Set()}; startSession("extra"); }
+  else if (a === "extra"){ run = {n: t.dataset.n === "all" ? Infinity : +t.dataset.n, skip: new Set(), last: new Set()}; startSession("extra"); }
   else if (a === "another") startSession("extra");
   else if (a === "next"){ if (sess){ clearTimeout(sess.timer); next(); } }
   else if (a === "hint"){ if (sess && !sess.busy) renderAsk(sess.q[sess.i], true); }
   else if (a === "dunno") dunno();
   else if (a === "reload") location.reload();
-  else if (a === "home"){ $("#summary").classList.add("hidden"); $("#home").classList.remove("hidden"); renderHome(); window.scrollTo(0, 0); }
+  else if (a === "home") goHome();
 });
+function goHome(){ $("#summary").classList.add("hidden"); $("#home").classList.remove("hidden"); renderHome(); window.scrollTo(0, 0); }
 document.addEventListener("submit", e => { if (e.target.id === "typedForm"){ e.preventDefault(); submitTyped(); } });
 document.addEventListener("keydown", e => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -702,7 +706,8 @@ document.addEventListener("keydown", e => {
     if (e.key === "Escape" && sess.view !== "typed"){ e.preventDefault(); endSession(); }
     return;
   }
-  if (e.key === "Enter" && !$("#summary").classList.contains("hidden")){ e.preventDefault(); $("#summary [data-act=home]").click(); return; }
+  // Enter goes home from the summary unless a button has focus: then Enter presses that button, as usual.
+  if (e.key === "Enter" && !$("#summary").classList.contains("hidden") && document.activeElement === document.body){ e.preventDefault(); $("#summary [data-act=home]").click(); return; }
   if (e.key === "Enter" && !$("#home").classList.contains("hidden") && document.activeElement === document.body){
     const b = $("#actions .btn-primary"); if (b){ e.preventDefault(); b.click(); }
   }

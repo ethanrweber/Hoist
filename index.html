@@ -506,7 +506,7 @@ function createCore(data, env){
     const st = fsrs(first ? null : {S: k.S, D: k.D}, g, elapsed);
     k.S = st.S; k.D = st.D; k.reps++; k.last = t;
     const ok = g > 1; let graduated = false;
-    if (!ok) k.missedOn = t;   // extra practice always brings back flags missed today
+    if (!ok) k.missedOn = t;   // each new run of extra practice starts with flags missed today
     if (k.stage === "mc"){ if (ok){ k.streak++; if (k.streak >= 2){ k.stage = "typed"; k.streak = 0; graduated = true; } } else k.streak = 0; }
     else if (ok) k.streak++;
     else { k.lapses++; if (keepStage) k.streak = 0; else { k.stage = "mc"; k.streak = 1; } }
@@ -528,27 +528,30 @@ function createCore(data, env){
   function weakness(c){ const k = card(c); return Math.max(0.01, 1 - retr(dayNum() + 1 - k.last, Math.max(k.S, .1))); }
   // Up to n of `list` for extra practice: flags missed today first, then a random draw that favors weak flags.
   function pickExtra(list, n){
+    if (n <= 0) return [];
     const t = dayNum();
     const missed = draw(list.filter(c => card(c).missedOn === t), () => 1, n);
     return missed.concat(draw(list.filter(c => card(c).missedOn !== t), weakness, n - missed.length));
   }
   // Extra practice comes in runs: a round from the home screen, then any number of "Another" rounds.
-  // Returns the flags the run's next round should skip: every flag practiced so far in the run, until that
-  // covers all practiced flags. Then the run starts over, skipping only the round just done (`done`).
-  function nextSkip(skip, done){
-    const all = new Set([...skip, ...done]);
-    return practiced().every(c => all.has(c)) ? new Set(done) : all;
+  // run: {n: flags per round (Infinity for all of them), skip: flags practiced so far in the run,
+  //       last: the round just done}.
+  // Returns the run after a round in which the flags in `done` were answered. Once the run has covered every
+  // practiced flag it starts over, still holding back the round just done.
+  function afterRound(run, done){
+    const all = new Set([...run.skip, ...done]);
+    return {n: run.n, skip: practiced().every(c => all.has(c)) ? new Set(done) : all, last: new Set(done)};
   }
 
   // The session's items in order: {k: "intro", c} shows a new flag, {k: "ask", c, n} asks for it (n = attempt).
-  // For "extra": n is the round's size, and `skip` holds flags to leave out unless there are too few others
-  // (see nextSkip). Flags missed today come first among the rest, so they come back every new run.
-  function buildQueue(mode, {n = 20, skip = new Set()} = {}){
-    const t = dayNum();
+  // For "extra", the second argument is the run (see afterRound). A round takes flags new to the run first,
+  // then flags from its earlier rounds, and flags from the round just done only if there still aren't enough.
+  // Within each group, flags missed today come first, so they lead every new run.
+  function buildQueue(mode, {n = 20, skip = new Set(), last = new Set()} = {}){
     if (mode === "extra"){
-      const pool = practiced();
-      const fresh = pickExtra(pool.filter(c => !skip.has(c)), n);
-      const picks = fresh.concat(pickExtra(pool.filter(c => skip.has(c)), n - fresh.length));
+      const pool = practiced(), picks = [];
+      const groups = [pool.filter(c => !skip.has(c) && !last.has(c)), pool.filter(c => skip.has(c) && !last.has(c)), pool.filter(c => last.has(c))];
+      for (const g of groups) picks.push(...pickExtra(g, n - picks.length));
       return shuffle(picks, random).map(c => ({k: "ask", c, n: 1}));
     }
     const plan = planToday();
@@ -570,7 +573,7 @@ function createCore(data, env){
   }
 
   return {BY, dayNum, today, touchDay, active, isActive, card, seen, mastered, status, dueList, practiced, newAllowance,
-    lookalikes, distractors, pickNew, planToday, judge, introduce, grade, buildQueue, nextSkip, shuffle: a => shuffle(a, random)};
+    lookalikes, distractors, pickNew, planToday, judge, introduce, grade, buildQueue, afterRound, shuffle: a => shuffle(a, random)};
 }
 
 return {VERSION, blankState, isNewer, migrate, createCore, fsrs, retr, ivlFor, W};
@@ -608,7 +611,7 @@ function reload(){ if (!saveFailed) S = load(); }
 S = load();
 
 const {BY, dayNum, touchDay, active, isActive, card, seen, mastered, status, practiced,
-  lookalikes, distractors, planToday, judge, introduce, grade, buildQueue, nextSkip, shuffle} =
+  lookalikes, distractors, planToday, judge, introduce, grade, buildQueue, afterRound, shuffle} =
   HoistCore.createCore({countries: COUNTRIES, families: FAMILIES, neighbors: NEIGHBORS}, {state: () => S});
 
 /* ---------- Flags ---------- */
@@ -666,12 +669,14 @@ function renderHome(){
   updateWall(total);
 }
 // Extra practice buttons: 20 and 50 when there are more flags than that to practice, and always all of them.
+// data-n is the round size, or "all". The screen-reader labels start with the visible text, so voice control
+// users can say what they see.
 function extraHTML(pool){
-  const btn = (n, label, aria) => `<button class="btn btn-quiet" data-act="extra" data-n="${n}" type="button" aria-label="${aria}">${label}</button>`;
+  const btn = (n, label, aria) => `<button class="btn btn-quiet" data-act="extra" data-n="${n}" type="button"${aria ? ` aria-label="${aria}"` : ""}>${label}</button>`;
   const sizes = [20, 50].filter(n => n < pool);
-  if (!sizes.length) return btn(pool, `Extra practice (${pool})`, `Extra practice, all ${pool} flags`);
+  if (!sizes.length) return btn("all", `Extra practice (${pool})`);
   return `<div class="extra" role="group" aria-labelledby="extraLabel"><span id="extraLabel">Extra practice</span>`
-    + sizes.map(n => btn(n, n, `${n} flags`)).join("") + btn(pool, `All ${pool}`, `All ${pool} flags`) + `</div>`;
+    + sizes.map(n => btn(n, n, `${n} flags`)).join("") + btn("all", `All ${pool}`, `All ${pool} flags`) + `</div>`;
 }
 
 /* ---------- The wall: built once, then only each tile's status changes ---------- */
@@ -720,13 +725,14 @@ function showDetail(c){
 
 /* ---------- Session ---------- */
 let sess = null;
-// The current run of extra practice: {n: flags per round, skip: flags the next round leaves out (see nextSkip)}.
-// A size button on the home screen starts a run; "Another" on the summary continues it.
+// The current run of extra practice (see afterRound in core.js). A size button on the home screen starts a run;
+// "Another" on the summary continues it.
 let run = null;
 function startSession(mode){
   if (mode === "more"){ touchDay().bonus += 5; save(); mode = "normal"; }
   const q = mode === "extra" ? buildQueue("extra", run) : buildQueue(mode);
-  if (!q.length){ renderHome(); return; }
+  // Nothing to do, say after progress was reset in another tab while this one showed the summary.
+  if (!q.length){ goHome(); return; }
   sess = {mode, q, i: 0, graded: new Set(), tried: new Set(), first: {right: 0, total: 0}, mixups: [], busy: false};
   $("#home").classList.add("hidden"); $("#summary").classList.add("hidden"); $("#session").classList.remove("hidden");
   window.scrollTo(0, 0);
@@ -735,7 +741,7 @@ function startSession(mode){
 function endSession(){
   const s = sess; sess = null;
   if (s) clearTimeout(s.timer);
-  if (s && s.mode === "extra") run.skip = nextSkip(run.skip, s.tried);
+  if (s && s.mode === "extra") run = afterRound(run, s.tried);
   $("#session").classList.add("hidden");
   if (s && (s.first.total || s.mixups.length)) showSummary(s); else { $("#home").classList.remove("hidden"); renderHome(); }
 }
@@ -916,7 +922,7 @@ function showSummary(s){
   const lead = `${s.first.total} ${s.first.total === 1 ? "flag" : "flags"}, <strong>${s.first.right} right on the first try</strong>.`
     + (s.mode === "extra" ? " Extra practice doesn’t change your review schedule." : "");
   const again = s.mode !== "extra" ? ""
-    : `<button class="btn btn-quiet" type="button" data-act="another">${run.n >= practiced().length ? `All ${run.n} again` : `Another ${run.n}`}</button>`;
+    : `<button class="btn btn-quiet" type="button" data-act="another">${run.n === Infinity ? `All ${practiced().length} again` : `Another ${run.n}`}</button>`;
   el.className = "summary";
   el.innerHTML = `
     <h2>${s.mode === "extra" ? "Practice done" : "Session done"}</h2>
@@ -955,14 +961,15 @@ document.addEventListener("click", e => {
   const a = t.dataset.act;
   if (a === "start") startSession("normal");
   else if (a === "more") startSession("more");
-  else if (a === "extra"){ run = {n: +t.dataset.n, skip: new Set()}; startSession("extra"); }
+  else if (a === "extra"){ run = {n: t.dataset.n === "all" ? Infinity : +t.dataset.n, skip: new Set(), last: new Set()}; startSession("extra"); }
   else if (a === "another") startSession("extra");
   else if (a === "next"){ if (sess){ clearTimeout(sess.timer); next(); } }
   else if (a === "hint"){ if (sess && !sess.busy) renderAsk(sess.q[sess.i], true); }
   else if (a === "dunno") dunno();
   else if (a === "reload") location.reload();
-  else if (a === "home"){ $("#summary").classList.add("hidden"); $("#home").classList.remove("hidden"); renderHome(); window.scrollTo(0, 0); }
+  else if (a === "home") goHome();
 });
+function goHome(){ $("#summary").classList.add("hidden"); $("#home").classList.remove("hidden"); renderHome(); window.scrollTo(0, 0); }
 document.addEventListener("submit", e => { if (e.target.id === "typedForm"){ e.preventDefault(); submitTyped(); } });
 document.addEventListener("keydown", e => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -977,7 +984,8 @@ document.addEventListener("keydown", e => {
     if (e.key === "Escape" && sess.view !== "typed"){ e.preventDefault(); endSession(); }
     return;
   }
-  if (e.key === "Enter" && !$("#summary").classList.contains("hidden")){ e.preventDefault(); $("#summary [data-act=home]").click(); return; }
+  // Enter goes home from the summary unless a button has focus: then Enter presses that button, as usual.
+  if (e.key === "Enter" && !$("#summary").classList.contains("hidden") && document.activeElement === document.body){ e.preventDefault(); $("#summary [data-act=home]").click(); return; }
   if (e.key === "Enter" && !$("#home").classList.contains("hidden") && document.activeElement === document.body){
     const b = $("#actions .btn-primary"); if (b){ e.preventDefault(); b.click(); }
   }

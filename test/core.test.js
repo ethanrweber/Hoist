@@ -175,11 +175,12 @@ function learn(t, codes, S = 5){
   codes.forEach(c => t.S.cards[c] = { stage: "typed", streak: 1, reps: 3, lapses: 0, S, D: 5, last: d - 2, due: d + 2 });
 }
 // Plays `rounds` rounds of one extra practice run, answering every flag. Returns each round's flags.
+const newRun = n => ({ n, skip: new Set(), last: new Set() });
 function playRun(t, n, rounds){
-  let skip = new Set(); const out = [];
+  let run = newRun(n); const out = [];
   for (let i = 0; i < rounds; i++){
-    const q = t.core.buildQueue("extra", { n, skip }).map(it => it.c);
-    out.push(q); skip = t.core.nextSkip(skip, new Set(q));
+    const q = t.core.buildQueue("extra", run).map(it => it.c);
+    out.push(q); run = t.core.afterRound(run, new Set(q));
   }
   return out;
 }
@@ -198,8 +199,12 @@ test("extra practice: weak flags come up more often, but strong ones still get a
 test("extra practice: a round has the size asked for, and All takes every practiced flag", () => {
   const t = setup({}, seeded(5)); learn(t, CODES.slice(0, 72));
   for (const n of [20, 50]) assert.equal(new Set(t.core.buildQueue("extra", { n }).map(it => it.c)).size, n);
-  const all = t.core.buildQueue("extra", { n: 72 }).map(it => it.c);
+  const all = t.core.buildQueue("extra", newRun(Infinity)).map(it => it.c);
   assert.deepEqual([...all].sort(), [...t.core.practiced()].sort());
+  // All stays all when more flags get practiced during the run (in another tab, say).
+  const run = t.core.afterRound(newRun(Infinity), new Set(all));
+  learn(t, CODES.slice(72, 77));
+  assert.equal(t.core.buildQueue("extra", run).length, 77);
 });
 
 test("extra practice: Another rounds repeat nothing until every flag has had a turn", () => {
@@ -218,16 +223,25 @@ test("extra practice: the round that finishes a pass fills its other places from
   const left = CODES.slice(0, 50).filter(c => !r1.includes(c) && !r2.includes(c));
   assert.equal(r3.length, 20);
   assert.ok(left.every(c => r3.includes(c)), "round 3 skipped a flag that hadn't had a turn");
+  assert.ok(r3.every(c => !r2.includes(c)), "round 3 repeated a flag from round 2");
   assert.ok(r4.every(c => !r3.includes(c)), "round 4 repeated a flag from round 3");
+});
+
+test("extra practice: a round repeats the one just done only when there aren't enough other flags", () => {
+  const t = setup({}, seeded(10)); learn(t, CODES.slice(0, 30));
+  const [r1, r2] = playRun(t, 20, 2);
+  const left = CODES.slice(0, 30).filter(c => !r1.includes(c));
+  assert.equal(r2.length, 20);
+  assert.ok(left.every(c => r2.includes(c)), "round 2 skipped a flag that hadn't had a turn");
 });
 
 test("extra practice: a round ended early only uses up the flags that were answered", () => {
   const t = setup({}, seeded(8)); learn(t, CODES.slice(0, 60));
-  const r1 = t.core.buildQueue("extra", { n: 20 }).map(it => it.c);
-  const skip = t.core.nextSkip(new Set(), new Set(r1.slice(0, 5)));
-  assert.equal(skip.size, 5);
-  const r2 = t.core.buildQueue("extra", { n: 20, skip }).map(it => it.c);
-  assert.ok(r2.every(c => !skip.has(c)));
+  const r1 = t.core.buildQueue("extra", newRun(20)).map(it => it.c);
+  const run = t.core.afterRound(newRun(20), new Set(r1.slice(0, 5)));
+  assert.equal(run.skip.size, 5);
+  const r2 = t.core.buildQueue("extra", run).map(it => it.c);
+  assert.ok(r2.every(c => !run.skip.has(c)));
 });
 
 test("extra practice: flags missed today lead a new run, but Another rounds don't repeat them", () => {
