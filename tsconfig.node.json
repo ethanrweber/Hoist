@@ -1,0 +1,11 @@
+{
+  // The build and the tests, which run in Node.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["es2025", "esnext.error"],
+    "types": ["node"],
+    "tsBuildInfoFile": "node_modules/.tmp/tsconfig.node.tsbuildinfo"
+  },
+  "files": ["src/build.ts"],
+  "include": ["test/**/*.ts"]
+}

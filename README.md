@@ -17,24 +17,30 @@ Progress is saved in your browser, so each browser or device keeps its own progr
 
 ## Editing
 
-Everything ships as one file, `index.html`. To change it, edit the sources and rebuild:
+Everything ships as one file, `index.html`. To change it, edit the sources, which are TypeScript, and rebuild:
 
-- `src/countries.js` has each country's name, accepted alternate names, region and one-line description, plus the look-alike families.
-- `src/core.js` holds the rules: scheduling, which flags are new each day, building and running a session (what each answer means, how it's graded, when a missed flag comes back), checking typed answers, settings, and upgrading saved progress. It has no page code, so it can be tested in Node.
-- `src/template.html` is the page: HTML, CSS, and the JavaScript that draws screens, turns clicks and keys into answers for `core.js`, and saves progress in the browser.
+- `src/countries.ts` has each country's name, accepted alternate names, region and one-line description, plus the look-alike families. Names and descriptions appear on the page as written, so they use curly apostrophes (’).
+- `src/core.ts` holds the rules: scheduling, which flags are new each day, building and running a session (what each answer means, how it's graded, when a missed flag comes back), checking typed answers, settings, and upgrading saved progress. It has no page code, so it can be tested in Node. It also defines the types the other files share, such as `State` (saved progress), `Country` and `Session`.
+- `src/page.ts` is the page's script: it draws screens, turns clicks and keys into answers for `core.ts`, and saves progress in the browser.
+- `src/template.html` is the page's HTML and CSS.
+- `src/build.ts` builds `index.html`: it bundles `page.ts` with everything it imports into one script with esbuild, and puts it in `template.html`. The page imports the rules from `core.ts` and the data from `countries.ts` and `neighbors.json`, and the flags from `hoist:flags`, a module the build makes from `src/flags/` (its type is in `src/hoist-flags.d.ts`). So the data is type-checked where the page uses it.
 - `src/flags/` holds the flag SVGs. `src/neighbors.json` lists the most similar-looking flags for each one, used as extra wrong answers.
 
-You need Node.js. Install the development tools once with `npm install`, then:
+You need Node.js 24.2 or later, which runs TypeScript files directly. Install the development tools once with `npm install`, then:
 
 ```
-npm run build    # rebuild index.html
-npm run format   # format the code with Prettier
-npm run check    # check formatting, then run the tests
+npm run build      # rebuild index.html
+npm run format     # format the code with Prettier
+npm run typecheck  # check the types
+npm test           # run the tests
+npm run check      # check formatting and types, then run the tests
 ```
 
-The build rewrites `index.html`, and stops with a list of problems if any country code in `countries.js` or `neighbors.json` doesn't match a country or a flag file. The tests fail if `index.html` is out of date, so rebuild before checking. The site itself has no dependencies: `index.html` is the whole thing.
+The build rewrites `index.html`, and stops with a list of problems if any country code in `countries.ts` or `neighbors.json` doesn't match a country or a flag file. It doesn't check types (esbuild just removes them), so run `npm run check` too. The tests fail if `index.html` is out of date, so rebuild before checking. The site itself has no dependencies: `index.html` is the whole thing.
 
-If you change what gets saved in the browser, raise `VERSION` in `src/core.js` and add an upgrade step to `UPGRADES`, so existing players' progress carries over.
+Each part is type-checked with only the globals it can use where it runs: `core.ts` and `countries.ts` with none at all (`tsconfig.core.json`), `page.ts` with the browser's (`tsconfig.page.json`), and the build and the tests with Node's (`tsconfig.node.json`). So `core.ts` can't use `document`, `localStorage` or `process`, say: the page passes in what the rules need.
+
+If you change what gets saved in the browser, raise `VERSION` in `src/core.ts` and add an upgrade step to `UPGRADES`, so existing players' progress carries over.
 
 ## Credits
 

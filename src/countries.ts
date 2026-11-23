@@ -1,5 +1,7 @@
 // c: ISO code, n: display name, a: other accepted answers, r: region, h: hook (the visual "tell")
-const COUNTRIES = [
+import type { Country, Family } from "./core.ts";
+
+export const COUNTRIES: readonly Country[] = [
   {
     c: "af",
     n: "Afghanistan",
@@ -77,7 +79,7 @@ const COUNTRIES = [
     c: "be",
     n: "Belgium",
     r: "Europe",
-    h: "Black, yellow, red in vertical stripes (Germany's are horizontal).",
+    h: "Black, yellow, red in vertical stripes (Germany’s are horizontal).",
   },
   {
     c: "bz",
@@ -174,7 +176,7 @@ const COUNTRIES = [
     c: "td",
     n: "Chad",
     r: "Africa",
-    h: "Blue-yellow-red, no emblem: Romania's twin. Chad's blue is the darker one.",
+    h: "Blue-yellow-red, no emblem: Romania’s twin. Chad’s blue is the darker one.",
   },
   {
     c: "cl",
@@ -231,7 +233,7 @@ const COUNTRIES = [
   },
   {
     c: "ci",
-    n: "Côte d'Ivoire",
+    n: "Côte d’Ivoire",
     a: ["Ivory Coast", "Cote dIvoire"],
     r: "Africa",
     h: "Orange-white-green: orange at the flagpole (Ireland starts with green).",
@@ -285,7 +287,7 @@ const COUNTRIES = [
     c: "ec",
     n: "Ecuador",
     r: "Americas",
-    h: "Colombia's yellow-blue-red, plus a coat of arms with a condor.",
+    h: "Colombia’s yellow-blue-red, plus a coat of arms with a condor.",
   },
   { c: "eg", n: "Egypt", r: "Africa", h: "Red-white-black with a golden eagle in the middle." },
   {
@@ -437,7 +439,7 @@ const COUNTRIES = [
     c: "lv",
     n: "Latvia",
     r: "Europe",
-    h: "Dark carmine with a thin white stripe (Austria's stripes are equal and bright).",
+    h: "Dark carmine with a thin white stripe (Austria’s stripes are equal and bright).",
   },
   { c: "lb", n: "Lebanon", r: "Asia", h: "Red-white-red with a green cedar tree." },
   { c: "ls", n: "Lesotho", r: "Africa", h: "Blue-white-green with a black Basotho hat." },
@@ -464,7 +466,7 @@ const COUNTRIES = [
     c: "lu",
     n: "Luxembourg",
     r: "Europe",
-    h: "Red-white-light blue (the Netherlands' blue is darker).",
+    h: "Red-white-light blue (the Netherlands’ blue is darker).",
   },
   { c: "mg", n: "Madagascar", r: "Africa", h: "White band at the flagpole, red over green." },
   { c: "mw", n: "Malawi", r: "Africa", h: "Black-red-green with a red rising sun on the black." },
@@ -571,7 +573,7 @@ const COUNTRIES = [
     c: "nz",
     n: "New Zealand",
     r: "Oceania",
-    h: "Union Jack with four red stars (Australia's are white, and there are more).",
+    h: "Union Jack with four red stars (Australia’s are white, and there are more).",
   },
   {
     c: "ni",
@@ -670,7 +672,7 @@ const COUNTRIES = [
     c: "ro",
     n: "Romania",
     r: "Europe",
-    h: "Blue-yellow-red, no emblem: Chad's twin. Romania's blue is the lighter one.",
+    h: "Blue-yellow-red, no emblem: Chad’s twin. Romania’s blue is the lighter one.",
   },
   {
     c: "ru",
@@ -705,7 +707,7 @@ const COUNTRIES = [
     c: "ws",
     n: "Samoa",
     r: "Oceania",
-    h: "Red with a blue corner holding the Southern Cross (Taiwan's has a sun).",
+    h: "Red with a blue corner holding the Southern Cross (Taiwan’s has a sun).",
   },
   { c: "sm", n: "San Marino", r: "Europe", h: "White over light blue with a coat of arms." },
   {
@@ -903,7 +905,7 @@ const COUNTRIES = [
     c: "vu",
     n: "Vanuatu",
     r: "Oceania",
-    h: "Red and green split by a yellow Y, with a boar's tusk on black.",
+    h: "Red and green split by a yellow Y, with a boar’s tusk on black.",
   },
   {
     c: "va",
@@ -937,12 +939,12 @@ const COUNTRIES = [
     n: "Kosovo",
     r: "Europe",
     optional: true,
-    h: "Blue with a gold map and six white stars (Cyprus's map is copper on white).",
+    h: "Blue with a gold map and six white stars (Cyprus’s map is copper on white).",
   },
 ];
 
 // Look-alike families: introduced together, used as multiple-choice distractors and side-by-side comparisons.
-const FAMILIES = [
+export const FAMILIES: readonly Family[] = [
   ["td", "ro", "ad", "md"],
   ["id", "mc", "pl", "sg"],
   ["ie", "ci", "it", "mx"],
@@ -984,5 +986,3 @@ const FAMILIES = [
   ["vc", "rw"],
   ["gq", "mz", "st", "dj"],
 ];
-
-if (typeof module !== "undefined") module.exports = { COUNTRIES, FAMILIES };

@@ -1,0 +1,9 @@
+{
+  // npm run typecheck (tsc -b) checks each part with its own settings. Editors find a file's part here too.
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.core.json" },
+    { "path": "./tsconfig.page.json" },
+    { "path": "./tsconfig.node.json" }
+  ]
+}

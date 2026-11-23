@@ -1,0 +1,9 @@
+{
+  // The page script, which runs in the browser, and the type of the flags module the build makes for it.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["es2023", "dom"],
+    "tsBuildInfoFile": "node_modules/.tmp/tsconfig.page.tsbuildinfo"
+  },
+  "files": ["src/page.ts", "src/hoist-flags.d.ts"]
+}

@@ -1,0 +1,6 @@
+{
+  // The rules and the country data: plain JavaScript, with no browser or Node globals.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "tsBuildInfoFile": "node_modules/.tmp/tsconfig.core.tsbuildinfo" },
+  "files": ["src/core.ts", "src/countries.ts"]
+}
