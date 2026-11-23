@@ -24,14 +24,15 @@ Everything ships as one file, `index.html`. To change it, edit the sources and r
 - `src/template.html` is the page: HTML, CSS, and the JavaScript that draws screens, turns clicks and keys into answers for `core.js`, and saves progress in the browser.
 - `src/flags/` holds the flag SVGs. `src/neighbors.json` lists the most similar-looking flags for each one, used as extra wrong answers.
 
-Then run:
+You need Node.js. Install the development tools once with `npm install`, then:
 
 ```
-npm run build   # or: node src/build.js
-npm test        # or: node --test
+npm run build    # rebuild index.html
+npm run format   # format the code with Prettier
+npm run check    # check formatting, then run the tests
 ```
 
-Both need Node.js and nothing else. The build rewrites `index.html`, and stops with a list of problems if any country code in `countries.js` or `neighbors.json` doesn't match a country or a flag file.
+The build rewrites `index.html`, and stops with a list of problems if any country code in `countries.js` or `neighbors.json` doesn't match a country or a flag file. The tests fail if `index.html` is out of date, so rebuild before checking. The site itself has no dependencies: `index.html` is the whole thing.
 
 If you change what gets saved in the browser, raise `VERSION` in `src/core.js` and add an upgrade step to `UPGRADES`, so existing players' progress carries over.
 
