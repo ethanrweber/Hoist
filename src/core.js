@@ -1,5 +1,5 @@
 // The app's rules, with no page or storage code: saved-progress upgrades, the FSRS scheduler, which flags
-// are new today, building a session, and checking typed answers.
+// are new today, building and running a session, checking and grading answers, and settings.
 // build.js inlines this file into index.html, and test/core.test.js loads it in Node.
 const HoistCore = (() => {
 "use strict";
@@ -12,16 +12,25 @@ function blankState(){
 const isObj = x => x !== null && typeof x === "object" && !Array.isArray(x);
 // UPGRADES[k] turns a version-k save into a version k + 1 save. Add a step whenever the saved shape changes.
 const UPGRADES = {
-  // settings.dark (true/false) became settings.theme ("system", "light" or "dark").
-  1: s => { const st = isObj(s.settings) ? s.settings : {}; st.theme = st.dark ? "dark" : "system"; delete st.dark; s.settings = st; },
+  // settings.dark (true/false) became settings.theme ("system", "light" or "dark"). A theme already there is kept,
+  // so the step does no harm to a save that already has the newer shape.
+  1: s => {
+    const st = isObj(s.settings) ? s.settings : {};
+    if (!("theme" in st)) st.theme = st.dark ? "dark" : "system";
+    delete st.dark; s.settings = st;
+  },
 };
+// The version that wrote a save (an object). No version, or one below 1 or not a number, means version 1, the one
+// that had no v. Anything past VERSION is newer, fraction or not. Otherwise a fraction counts as the version below it.
+function savedVersion(saved){ const v = Number(saved.v); return !(v >= 1) ? 1 : v > VERSION ? v : Math.floor(v); }
 // True when the save was written by a newer version of Hoist (open in another tab). Such a save can be
 // shown, but this version must not write over it: it doesn't know the newer fields.
-function isNewer(saved){ return isObj(saved) && saved.v > VERSION; }
-// Turns whatever was in storage into a current-version state, filling in anything missing.
+function isNewer(saved){ return isObj(saved) && savedVersion(saved) > VERSION; }
+// Turns whatever was in storage into a current-version state, filling in anything missing. A save gets the
+// upgrade steps from its version (see savedVersion) up, so a newer save gets none.
 function migrate(saved){
   if (!isObj(saved)) return blankState();
-  for (let v = saved.v || 1; v < VERSION; v++) UPGRADES[v](saved);
+  for (let v = savedVersion(saved); v < VERSION; v++) UPGRADES[v](saved);
   const b = blankState();
   return {
     v: VERSION,
@@ -55,13 +64,16 @@ function rng(seed){ return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let 
 
 /*
  * data: {countries, families, neighbors}
- * env:  {state: () => the current state, now?: () => ms (default Date.now), random?: () => [0, 1) (default Math.random)}
+ * env:  {state: () => the current state, now?: () => ms (default Date.now), random?: () => [0, 1) (default Math.random),
+ *        changed?: () => saved progress changed (default: does nothing)}
  * Every function reads env.state() when called, so the page can swap in a freshly loaded state.
- * Functions here change the state but never save it: the caller saves.
+ * Functions here change the state but never save it. Instead, any call that changes it calls env.changed(), meaning
+ * "saved progress changed during this call: save once the call is over". Not right away: the change may not be done
+ * yet (a caller can change what touchDay() returns, say).
  */
 function createCore(data, env){
   const COUNTRIES = data.countries, FAMILIES = data.families, NEIGHBORS = data.neighbors;
-  const state = env.state, now = env.now || Date.now, random = env.random || Math.random;
+  const state = env.state, now = env.now || Date.now, random = env.random || Math.random, changed = env.changed || (() => {});
   const BY = {}; COUNTRIES.forEach(c => BY[c.c] = c);
   const SIB = {}; FAMILIES.forEach(f => f.forEach(c => SIB[c] = f.filter(x => x !== c)));
 
@@ -70,8 +82,8 @@ function createCore(data, env){
   // Today's counters, as a copy, so changing it can't change the state (touchDay gives the stored ones).
   // Counters from an earlier day read as zeros.
   function today(){ const t = dayNum(), d = state().day; return d.n === t ? Object.assign({}, d) : {n: t, newDone: 0, bonus: 0}; }
-  // Today's counters, stored in the state so they can be changed. Call only right before saving.
-  function touchDay(){ const s = state(); s.day = today(); return s.day; }
+  // Today's counters, stored in the state so they can be changed. Calling it counts as a change (see env.changed).
+  function touchDay(){ const s = state(); s.day = today(); changed(); return s.day; }
 
   /* ---------- Flags and their status ---------- */
   function active(){ return COUNTRIES.filter(c => !c.optional || state().settings.kosovo).map(c => c.c); }
@@ -188,6 +200,7 @@ function createCore(data, env){
     const t = dayNum();
     state().cards[c] = {stage: "mc", streak: 0, reps: 0, lapses: 0, S: 0, D: 0, last: t, due: t};
     touchDay().newDone++;
+    changed();
     return true;
   }
   // g: 1 again, 2 hard, 3 good. A flag starts as multiple choice ("mc") and moves to typing ("typed") after
@@ -208,6 +221,7 @@ function createCore(data, env){
     if (k.stage === "mc") ivl = Math.min(ivl, 2);   // recognition alone doesn't earn long gaps
     if (graduated) ivl = Math.min(ivl, 3);           // first typed recall comes soon after graduating
     k.due = t + ivl;
+    changed();
   }
 
   /* ---------- Sessions ---------- */
@@ -266,8 +280,107 @@ function createCore(data, env){
     return out;
   }
 
+  // One session: its queue, what each answer means, when a missed flag comes back, and the summary.
+  // mode: "normal", "more" ("Learn 5 more": 5 more new flags today, then a normal session) or "extra" (run: the
+  // extra practice run, see afterRound). Returns null when there's nothing to practice.
+  function session(mode, run){
+    if (mode === "more"){ touchDay().bonus += 5; mode = "normal"; }
+    const q = mode === "extra" ? buildQueue("extra", run) : buildQueue(mode);
+    if (!q.length) return null;
+    // i: the item on screen (-1 before the first). view: the question's form once shown. hint: choices were
+    // asked for on the question on screen. answered: the question on screen has its answer.
+    let i = -1, view = null, hint = false, answered = false;
+    const graded = new Set(), tried = new Set(), first = {right: 0, total: 0}, mixups = [];
+    const item = () => i >= 0 && i < q.length ? q[i] : null;
+
+    // The item on screen: {k: "intro", c} or {k: "ask", c, n} (n = attempt), or null once the session is over.
+    function current(){ const it = item(); return it && Object.assign({}, it); }
+    // done: items finished, out of total (which grows when a missed flag is queued again).
+    function progress(){ return {done: Math.max(0, i), total: q.length}; }
+    // Moves to the next item, the first one the first time. An intro for a flag another tab has introduced
+    // meanwhile is skipped. Returns true if it introduced a new flag.
+    function next(){
+      if (i >= q.length) return false;
+      i++;
+      while (i < q.length && q[i].k === "intro" && seen(q[i].c)) i++;
+      view = null; hint = false; answered = false;
+      const it = item();
+      return !!it && it.k === "intro" && introduce(it.c);
+    }
+    // How to ask the flag on screen: typing once it has reached that stage, unless choices were asked for
+    // (hint: "Show choices", which holds until next(): asking again without it can't go back to typing). A flag
+    // still at multiple choice has no "Show choices", so hint does nothing there.
+    // Returns {view: "mc", options} or {view: "typed"}, or null if there's nothing to ask.
+    function question({hint: h = false} = {}){
+      const it = item();
+      if (!it || it.k !== "ask" || answered) return null;
+      const c = it.c, k = card(c), stage = k ? k.stage : "mc";
+      hint = hint || (!!h && stage === "typed");
+      view = hint || stage === "mc" ? "mc" : "typed";
+      return view === "mc" ? {view, options: shuffle([c].concat(distractors(c)), random)} : {view};
+    }
+    // a: {pick: code} for multiple choice, {typed: text} for typing, or {dunno: true} for "I don't know".
+    // ms: time taken to answer. firstKeyMs: time to the first key typed, or null.
+    // Returns {verdict, guess, quick}, or null if there's no question to answer or it has its answer already.
+    // verdict: "right", "typo", "hinted" (right, but after "Show choices", so it counts as a miss) or "miss". For
+    // typing it can also be "empty" (show choices instead) or "ambiguous" (ask for a retype): those aren't answers.
+    // guess: the country answered instead, if any. quick: a fast miss, which comes back sooner.
+    function answer(a, {ms, firstKeyMs} = {}){
+      const it = item();
+      if (!it || it.k !== "ask" || answered || !view) return null;
+      const c = it.c;
+      let r;
+      if (a.dunno) r = {ok: false, guess: null, g: 1};
+      else if ("pick" in a){
+        if (view !== "mc") return null;
+        const ok = a.pick === c;
+        r = {ok, guess: ok ? null : a.pick, g: (!ok || hint) ? 1 : ms > 6000 ? 2 : 3, hinted: ok && hint, quick: !ok && ms < 2200 && !hint};
+      } else {
+        if (view !== "typed") return null;
+        const j = judge(a.typed, c);
+        if (j.empty) return {verdict: "empty", guess: null, quick: false};
+        if (j.ambiguous) return {verdict: "ambiguous", guess: null, quick: false};
+        r = {ok: j.ok, guess: j.guess || null, typo: j.typo, g: !j.ok ? 1 : (j.typo || ms > 12000) ? 2 : 3,
+          quick: !j.ok && !!j.guess && firstKeyMs != null && firstKeyMs < 2500};
+      }
+      answered = true;
+      settle(it, r);
+      return {verdict: r.hinted ? "hinted" : !r.ok ? "miss" : r.typo ? "typo" : "right", guess: r.guess, quick: !!r.quick};
+    }
+    // r.g: the grade. r.hinted: a right pick after "Show choices", which counts as a miss everywhere but leaves the
+    // flag at typing. A flag counts toward the first-try score, and is graded, only at its first answer.
+    function settle(it, r){
+      const c = it.c, missed = !r.ok || r.hinted;
+      if (!tried.has(c)){ tried.add(c); first.total++; if (!missed) first.right++; }
+      if (mode !== "extra" && !graded.has(c)){ grade(c, r.g, {keepStage: r.hinted}); graded.add(c); }
+      if (r.guess && r.guess !== c){
+        const conf = state().confusions, key = c + ">" + r.guess; conf[key] = (conf[key] || 0) + 1; changed();
+        mixups.push([c, r.guess]);
+      }
+      // A missed flag comes back a few cards later (sooner after a quick miss), up to 3 asks in all.
+      if (missed && it.n < 3) q.splice(Math.min(q.length, i + 1 + (r.quick ? 3 : 5)), 0, {k: "ask", c, n: it.n + 1});
+    }
+    // summary: {mode, right: flags right at their first answer, total: flags answered, mixups: [[flag, taken for],
+    // ...], each pair once, in the order they happened}. run: for extra practice, the run after this round.
+    function end(){
+      const mix = [...new Set(mixups.map(([a, b]) => a + ">" + b))].map(k => k.split(">"));
+      return {summary: {mode, right: first.right, total: first.total, mixups: mix}, run: mode === "extra" ? afterRound(run, tried) : run};
+    }
+    return {mode, current, progress, next, question, answer, end};
+  }
+
+  /* ---------- Settings ---------- */
+  // Changes a setting, which must be one a fresh save has: a new setting goes in blankState(), where the
+  // saved-shape test sees it.
+  function setSetting(name, value){
+    if (!Object.keys(blankState().settings).includes(name)) throw new Error(`Unknown setting "${name}"`);
+    state().settings[name] = value;
+    changed();
+  }
+
   return {BY, dayNum, today, touchDay, active, isActive, card, seen, mastered, status, dueList, practiced, newAllowance,
-    lookalikes, distractors, pickNew, planToday, judge, introduce, grade, buildQueue, afterRound, shuffle: a => shuffle(a, random)};
+    lookalikes, distractors, pickNew, planToday, judge, introduce, grade, buildQueue, afterRound, session, setSetting,
+    shuffle: a => shuffle(a, random)};
 }
 
 return {VERSION, blankState, isNewer, migrate, createCore, fsrs, retr, ivlFor, W};

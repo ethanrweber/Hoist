@@ -306,7 +306,7 @@ const FLAGS={"af":"<svg width=\"600\" height=\"400\" preserveAspectRatio=\"xMidY
 </script>
 <script>
 // The app's rules, with no page or storage code: saved-progress upgrades, the FSRS scheduler, which flags
-// are new today, building a session, and checking typed answers.
+// are new today, building and running a session, checking and grading answers, and settings.
 // build.js inlines this file into index.html, and test/core.test.js loads it in Node.
 const HoistCore = (() => {
 "use strict";
@@ -319,16 +319,25 @@ function blankState(){
 const isObj = x => x !== null && typeof x === "object" && !Array.isArray(x);
 // UPGRADES[k] turns a version-k save into a version k + 1 save. Add a step whenever the saved shape changes.
 const UPGRADES = {
-  // settings.dark (true/false) became settings.theme ("system", "light" or "dark").
-  1: s => { const st = isObj(s.settings) ? s.settings : {}; st.theme = st.dark ? "dark" : "system"; delete st.dark; s.settings = st; },
+  // settings.dark (true/false) became settings.theme ("system", "light" or "dark"). A theme already there is kept,
+  // so the step does no harm to a save that already has the newer shape.
+  1: s => {
+    const st = isObj(s.settings) ? s.settings : {};
+    if (!("theme" in st)) st.theme = st.dark ? "dark" : "system";
+    delete st.dark; s.settings = st;
+  },
 };
+// The version that wrote a save (an object). No version, or one below 1 or not a number, means version 1, the one
+// that had no v. Anything past VERSION is newer, fraction or not. Otherwise a fraction counts as the version below it.
+function savedVersion(saved){ const v = Number(saved.v); return !(v >= 1) ? 1 : v > VERSION ? v : Math.floor(v); }
 // True when the save was written by a newer version of Hoist (open in another tab). Such a save can be
 // shown, but this version must not write over it: it doesn't know the newer fields.
-function isNewer(saved){ return isObj(saved) && saved.v > VERSION; }
-// Turns whatever was in storage into a current-version state, filling in anything missing.
+function isNewer(saved){ return isObj(saved) && savedVersion(saved) > VERSION; }
+// Turns whatever was in storage into a current-version state, filling in anything missing. A save gets the
+// upgrade steps from its version (see savedVersion) up, so a newer save gets none.
 function migrate(saved){
   if (!isObj(saved)) return blankState();
-  for (let v = saved.v || 1; v < VERSION; v++) UPGRADES[v](saved);
+  for (let v = savedVersion(saved); v < VERSION; v++) UPGRADES[v](saved);
   const b = blankState();
   return {
     v: VERSION,
@@ -362,13 +371,16 @@ function rng(seed){ return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let 
 
 /*
  * data: {countries, families, neighbors}
- * env:  {state: () => the current state, now?: () => ms (default Date.now), random?: () => [0, 1) (default Math.random)}
+ * env:  {state: () => the current state, now?: () => ms (default Date.now), random?: () => [0, 1) (default Math.random),
+ *        changed?: () => saved progress changed (default: does nothing)}
  * Every function reads env.state() when called, so the page can swap in a freshly loaded state.
- * Functions here change the state but never save it: the caller saves.
+ * Functions here change the state but never save it. Instead, any call that changes it calls env.changed(), meaning
+ * "saved progress changed during this call: save once the call is over". Not right away: the change may not be done
+ * yet (a caller can change what touchDay() returns, say).
  */
 function createCore(data, env){
   const COUNTRIES = data.countries, FAMILIES = data.families, NEIGHBORS = data.neighbors;
-  const state = env.state, now = env.now || Date.now, random = env.random || Math.random;
+  const state = env.state, now = env.now || Date.now, random = env.random || Math.random, changed = env.changed || (() => {});
   const BY = {}; COUNTRIES.forEach(c => BY[c.c] = c);
   const SIB = {}; FAMILIES.forEach(f => f.forEach(c => SIB[c] = f.filter(x => x !== c)));
 
@@ -377,8 +389,8 @@ function createCore(data, env){
   // Today's counters, as a copy, so changing it can't change the state (touchDay gives the stored ones).
   // Counters from an earlier day read as zeros.
   function today(){ const t = dayNum(), d = state().day; return d.n === t ? Object.assign({}, d) : {n: t, newDone: 0, bonus: 0}; }
-  // Today's counters, stored in the state so they can be changed. Call only right before saving.
-  function touchDay(){ const s = state(); s.day = today(); return s.day; }
+  // Today's counters, stored in the state so they can be changed. Calling it counts as a change (see env.changed).
+  function touchDay(){ const s = state(); s.day = today(); changed(); return s.day; }
 
   /* ---------- Flags and their status ---------- */
   function active(){ return COUNTRIES.filter(c => !c.optional || state().settings.kosovo).map(c => c.c); }
@@ -495,6 +507,7 @@ function createCore(data, env){
     const t = dayNum();
     state().cards[c] = {stage: "mc", streak: 0, reps: 0, lapses: 0, S: 0, D: 0, last: t, due: t};
     touchDay().newDone++;
+    changed();
     return true;
   }
   // g: 1 again, 2 hard, 3 good. A flag starts as multiple choice ("mc") and moves to typing ("typed") after
@@ -515,6 +528,7 @@ function createCore(data, env){
     if (k.stage === "mc") ivl = Math.min(ivl, 2);   // recognition alone doesn't earn long gaps
     if (graduated) ivl = Math.min(ivl, 3);           // first typed recall comes soon after graduating
     k.due = t + ivl;
+    changed();
   }
 
   /* ---------- Sessions ---------- */
@@ -573,8 +587,107 @@ function createCore(data, env){
     return out;
   }
 
+  // One session: its queue, what each answer means, when a missed flag comes back, and the summary.
+  // mode: "normal", "more" ("Learn 5 more": 5 more new flags today, then a normal session) or "extra" (run: the
+  // extra practice run, see afterRound). Returns null when there's nothing to practice.
+  function session(mode, run){
+    if (mode === "more"){ touchDay().bonus += 5; mode = "normal"; }
+    const q = mode === "extra" ? buildQueue("extra", run) : buildQueue(mode);
+    if (!q.length) return null;
+    // i: the item on screen (-1 before the first). view: the question's form once shown. hint: choices were
+    // asked for on the question on screen. answered: the question on screen has its answer.
+    let i = -1, view = null, hint = false, answered = false;
+    const graded = new Set(), tried = new Set(), first = {right: 0, total: 0}, mixups = [];
+    const item = () => i >= 0 && i < q.length ? q[i] : null;
+
+    // The item on screen: {k: "intro", c} or {k: "ask", c, n} (n = attempt), or null once the session is over.
+    function current(){ const it = item(); return it && Object.assign({}, it); }
+    // done: items finished, out of total (which grows when a missed flag is queued again).
+    function progress(){ return {done: Math.max(0, i), total: q.length}; }
+    // Moves to the next item, the first one the first time. An intro for a flag another tab has introduced
+    // meanwhile is skipped. Returns true if it introduced a new flag.
+    function next(){
+      if (i >= q.length) return false;
+      i++;
+      while (i < q.length && q[i].k === "intro" && seen(q[i].c)) i++;
+      view = null; hint = false; answered = false;
+      const it = item();
+      return !!it && it.k === "intro" && introduce(it.c);
+    }
+    // How to ask the flag on screen: typing once it has reached that stage, unless choices were asked for
+    // (hint: "Show choices", which holds until next(): asking again without it can't go back to typing). A flag
+    // still at multiple choice has no "Show choices", so hint does nothing there.
+    // Returns {view: "mc", options} or {view: "typed"}, or null if there's nothing to ask.
+    function question({hint: h = false} = {}){
+      const it = item();
+      if (!it || it.k !== "ask" || answered) return null;
+      const c = it.c, k = card(c), stage = k ? k.stage : "mc";
+      hint = hint || (!!h && stage === "typed");
+      view = hint || stage === "mc" ? "mc" : "typed";
+      return view === "mc" ? {view, options: shuffle([c].concat(distractors(c)), random)} : {view};
+    }
+    // a: {pick: code} for multiple choice, {typed: text} for typing, or {dunno: true} for "I don't know".
+    // ms: time taken to answer. firstKeyMs: time to the first key typed, or null.
+    // Returns {verdict, guess, quick}, or null if there's no question to answer or it has its answer already.
+    // verdict: "right", "typo", "hinted" (right, but after "Show choices", so it counts as a miss) or "miss". For
+    // typing it can also be "empty" (show choices instead) or "ambiguous" (ask for a retype): those aren't answers.
+    // guess: the country answered instead, if any. quick: a fast miss, which comes back sooner.
+    function answer(a, {ms, firstKeyMs} = {}){
+      const it = item();
+      if (!it || it.k !== "ask" || answered || !view) return null;
+      const c = it.c;
+      let r;
+      if (a.dunno) r = {ok: false, guess: null, g: 1};
+      else if ("pick" in a){
+        if (view !== "mc") return null;
+        const ok = a.pick === c;
+        r = {ok, guess: ok ? null : a.pick, g: (!ok || hint) ? 1 : ms > 6000 ? 2 : 3, hinted: ok && hint, quick: !ok && ms < 2200 && !hint};
+      } else {
+        if (view !== "typed") return null;
+        const j = judge(a.typed, c);
+        if (j.empty) return {verdict: "empty", guess: null, quick: false};
+        if (j.ambiguous) return {verdict: "ambiguous", guess: null, quick: false};
+        r = {ok: j.ok, guess: j.guess || null, typo: j.typo, g: !j.ok ? 1 : (j.typo || ms > 12000) ? 2 : 3,
+          quick: !j.ok && !!j.guess && firstKeyMs != null && firstKeyMs < 2500};
+      }
+      answered = true;
+      settle(it, r);
+      return {verdict: r.hinted ? "hinted" : !r.ok ? "miss" : r.typo ? "typo" : "right", guess: r.guess, quick: !!r.quick};
+    }
+    // r.g: the grade. r.hinted: a right pick after "Show choices", which counts as a miss everywhere but leaves the
+    // flag at typing. A flag counts toward the first-try score, and is graded, only at its first answer.
+    function settle(it, r){
+      const c = it.c, missed = !r.ok || r.hinted;
+      if (!tried.has(c)){ tried.add(c); first.total++; if (!missed) first.right++; }
+      if (mode !== "extra" && !graded.has(c)){ grade(c, r.g, {keepStage: r.hinted}); graded.add(c); }
+      if (r.guess && r.guess !== c){
+        const conf = state().confusions, key = c + ">" + r.guess; conf[key] = (conf[key] || 0) + 1; changed();
+        mixups.push([c, r.guess]);
+      }
+      // A missed flag comes back a few cards later (sooner after a quick miss), up to 3 asks in all.
+      if (missed && it.n < 3) q.splice(Math.min(q.length, i + 1 + (r.quick ? 3 : 5)), 0, {k: "ask", c, n: it.n + 1});
+    }
+    // summary: {mode, right: flags right at their first answer, total: flags answered, mixups: [[flag, taken for],
+    // ...], each pair once, in the order they happened}. run: for extra practice, the run after this round.
+    function end(){
+      const mix = [...new Set(mixups.map(([a, b]) => a + ">" + b))].map(k => k.split(">"));
+      return {summary: {mode, right: first.right, total: first.total, mixups: mix}, run: mode === "extra" ? afterRound(run, tried) : run};
+    }
+    return {mode, current, progress, next, question, answer, end};
+  }
+
+  /* ---------- Settings ---------- */
+  // Changes a setting, which must be one a fresh save has: a new setting goes in blankState(), where the
+  // saved-shape test sees it.
+  function setSetting(name, value){
+    if (!Object.keys(blankState().settings).includes(name)) throw new Error(`Unknown setting "${name}"`);
+    state().settings[name] = value;
+    changed();
+  }
+
   return {BY, dayNum, today, touchDay, active, isActive, card, seen, mastered, status, dueList, practiced, newAllowance,
-    lookalikes, distractors, pickNew, planToday, judge, introduce, grade, buildQueue, afterRound, shuffle: a => shuffle(a, random)};
+    lookalikes, distractors, pickNew, planToday, judge, introduce, grade, buildQueue, afterRound, session, setSetting,
+    shuffle: a => shuffle(a, random)};
 }
 
 return {VERSION, blankState, isNewer, migrate, createCore, fsrs, retr, ivlFor, W};
@@ -607,13 +720,17 @@ function load(){
   return HoistCore.migrate(saved);
 }
 function save(){ if (outdated) return; try { localStorage.setItem(KEY, JSON.stringify(S)); saveFailed = false; } catch(e){ saveFailed = true; } }
+// core.js calls this when it changes the progress (env.changed in core.js). The save waits until the code running now
+// is done, so it holds the whole change, and changes made together are saved once. It still runs before the next
+// event, so loading what another tab saved (see refresh) can't drop the change first.
+let savePending = false;
+function changed(){ if (savePending) return; savePending = true; queueMicrotask(() => { savePending = false; save(); }); }
 // Skipped while saving fails (private mode, full storage), so progress that exists only in this page isn't dropped.
 function reload(){ if (!saveFailed) S = load(); }
 S = load();
 
-const {BY, dayNum, touchDay, active, isActive, card, seen, mastered, status, practiced,
-  lookalikes, distractors, planToday, judge, introduce, grade, buildQueue, afterRound, shuffle} =
-  HoistCore.createCore({countries: COUNTRIES, families: FAMILIES, neighbors: NEIGHBORS}, {state: () => S});
+const {BY, dayNum, active, isActive, card, seen, mastered, status, practiced, lookalikes, planToday, session, setSetting, shuffle} =
+  HoistCore.createCore({countries: COUNTRIES, families: FAMILIES, neighbors: NEIGHBORS}, {state: () => S, changed});
 
 /* ---------- Flags ---------- */
 // Each SVG becomes a blob: URL once, so <img> tags carry a short link instead of the whole file.
@@ -725,46 +842,45 @@ function showDetail(c){
 }
 
 /* ---------- Session ---------- */
+// The session on screen. sess.core is its rules and progress (session() in core.js); the rest is the page's:
+// view routes keys, t0 and firstKey time the answer, opts are the choices in order, timer moves on after an answer.
 let sess = null;
 // The current run of extra practice (see afterRound in core.js). A size button on the home screen starts a run;
 // "Another" on the summary continues it.
 let run = null;
 function startSession(mode){
-  if (mode === "more"){ touchDay().bonus += 5; save(); mode = "normal"; }
-  const q = mode === "extra" ? buildQueue("extra", run) : buildQueue(mode);
+  const s = session(mode, run);
   // Nothing to do, say after progress was reset in another tab while this one showed the summary.
-  if (!q.length){ goHome(); return; }
-  sess = {mode, q, i: 0, graded: new Set(), tried: new Set(), first: {right: 0, total: 0}, mixups: [], busy: false};
+  if (!s){ goHome(); return; }
+  sess = {core: s, view: null};
   $("#home").classList.add("hidden"); $("#summary").classList.add("hidden"); $("#session").classList.remove("hidden");
   window.scrollTo(0, 0);
-  next(true);
+  next();
 }
 function endSession(){
   const s = sess; sess = null;
   if (s) clearTimeout(s.timer);
-  if (s && s.mode === "extra") run = afterRound(run, s.tried);
+  const done = s && s.core.end();
+  if (done) run = done.run;
   $("#session").classList.add("hidden");
-  if (s && (s.first.total || s.mixups.length)) showSummary(s); else { $("#home").classList.remove("hidden"); renderHome(); }
+  if (done && done.summary.total) showSummary(done.summary); else { $("#home").classList.remove("hidden"); renderHome(); }
 }
 function updateBar(){
-  const done = sess.i, total = sess.q.length;
+  const {done, total} = sess.core.progress();
   $("#progressFill").style.width = (100 * done / Math.max(1, total)) + "%";
   $("#count").textContent = `${Math.min(done + 1, total)} of ${total}`;
 }
-function next(first){
+function next(){
   if (!sess) return;
-  if (!first) sess.i++;
-  while (sess.i < sess.q.length && sess.q[sess.i].k === "intro" && seen(sess.q[sess.i].c)) sess.i++;
-  if (sess.i >= sess.q.length){ endSession(); return; }
+  sess.core.next();
+  const it = sess.core.current();
+  if (!it){ endSession(); return; }
   updateBar();
-  const it = sess.q[sess.i];
-  sess.busy = false;
-  if (it.k === "intro") renderIntro(it.c); else renderAsk(it);
+  if (it.k === "intro") renderIntro(it.c); else renderAsk();
 }
 function mastHTML(c, cls){ return `<div class="mast raise ${cls || ""}">${img(c, "Flag to identify")}</div>`; }
 
 function renderIntro(c){
-  if (introduce(c)) save();
   sess.view = "intro";
   $("#stage").innerHTML = `
     <p class="tag">New flag</p>
@@ -776,14 +892,14 @@ function renderIntro(c){
   focusMain();
 }
 
-function stageOf(c){ const k = card(c); return k ? k.stage : "mc"; }
-function renderAsk(it, forceMC){
-  const c = it.c;
-  const mode = forceMC ? "mc" : stageOf(c);
-  sess.view = mode; sess.t0 = performance.now(); sess.firstKey = null; sess.hint = !!forceMC;
-  const tag = sess.mode === "extra" ? `<p class="tag">Extra practice</p>` : (it.n > 1 ? `<p class="tag">Try again</p>` : "");
-  if (mode === "mc"){
-    const opts = shuffle([c].concat(distractors(c)));
+// forceMC: "Show choices" on a typing question. Does nothing once the question has its answer.
+function renderAsk(forceMC){
+  const ask = sess.core.question({hint: forceMC}); if (!ask) return;
+  const it = sess.core.current(), c = it.c;
+  sess.view = ask.view; sess.t0 = performance.now(); sess.firstKey = null;
+  const tag = sess.core.mode === "extra" ? `<p class="tag">Extra practice</p>` : (it.n > 1 ? `<p class="tag">Try again</p>` : "");
+  if (ask.view === "mc"){
+    const opts = ask.options;
     sess.opts = opts;
     $("#stage").innerHTML = `${tag}${forceMC ? "" : mastHTML(c, "fit")}
       ${forceMC ? `<div class="mast fit">${img(c, "Flag to identify")}</div>` : ""}
@@ -828,22 +944,20 @@ function fitFlag(){
 }
 function focusMain(){ const b = $("#stage .choice, #stage [data-act=next]"); if (b) b.focus({preventScroll: true}); }
 
+// The view checks map input to the question on screen. core.js ignores an answer once the question has one.
 function pick(o){
-  if (!sess || sess.busy || sess.view !== "mc") return;
-  sess.busy = true;
-  const it = sess.q[sess.i], c = it.c, rt = performance.now() - sess.t0;
-  const ok = o === c;
+  if (!sess || sess.view !== "mc") return;
+  const r = sess.core.answer({pick: o}, {ms: performance.now() - sess.t0}); if (!r) return;
+  const c = sess.core.current().c;
   document.querySelectorAll("#stage .choice").forEach(b => { b.disabled = true; if (b.dataset.pick === c) b.classList.add("right"); else if (b.dataset.pick === o) b.classList.add("wrong"); });
-  // After "Show choices" on a typing question, a right pick still counts as a miss (see settle), but the flag stays at typing.
-  const g = (!ok || sess.hint) ? 1 : rt > 6000 ? 2 : 3;
-  settle(it, {ok, guess: ok ? null : o, g, hinted: ok && sess.hint, quick: !ok && rt < 2200 && !sess.hint});
+  afterAnswer(c, r);
 }
 function submitTyped(){
-  if (!sess || sess.busy || sess.view !== "typed") return;
-  const it = sess.q[sess.i], c = it.c, inp = $("#answer"); const val = inp.value;
-  const r = judge(val, c);
-  if (r.empty){ renderAsk(it, true); return; }
-  if (r.ambiguous){
+  if (!sess || sess.view !== "typed") return;
+  const inp = $("#answer"); const val = inp.value;
+  const r = sess.core.answer({typed: val}, {ms: performance.now() - sess.t0, firstKeyMs: sess.firstKey}); if (!r) return;
+  if (r.verdict === "empty"){ renderAsk(true); return; }
+  if (r.verdict === "ambiguous"){
     // As close to another country as to the right one: ask again instead of guessing which was meant.
     const note = $("#typedNote");
     note.textContent = "That’s close to more than one country. Check the spelling.";
@@ -852,45 +966,31 @@ function submitTyped(){
     inp.select();
     return;
   }
-  sess.busy = true;
-  const rt = performance.now() - sess.t0;
-  inp.readOnly = true; inp.classList.add(r.ok ? "right" : "wrong");
-  const g = !r.ok ? 1 : (r.typo || rt > 12000) ? 2 : 3;
-  settle(it, {ok: r.ok, guess: r.guess || null, typo: r.typo, typedRaw: val, g, quick: !r.ok && !!r.guess && sess.firstKey != null && sess.firstKey < 2500});
+  inp.readOnly = true; inp.classList.add(r.verdict === "miss" ? "wrong" : "right");
+  afterAnswer(sess.core.current().c, r, val);
 }
 function dunno(){
-  if (!sess || sess.busy) return;
-  sess.busy = true;
-  settle(sess.q[sess.i], {ok: false, guess: null, g: 1, dunno: true});
+  if (!sess) return;
+  const r = sess.core.answer({dunno: true}); if (!r) return;
+  afterAnswer(sess.core.current().c, r);
 }
-function settle(it, r){
-  const c = it.c;
-  // r.hinted: a right pick after "Show choices". Shown as right, but it counts as a miss everywhere else.
-  const missed = !r.ok || r.hinted;
-  if (!sess.tried.has(c)){ sess.tried.add(c); sess.first.total++; if (!missed) sess.first.right++; }
-  if (sess.mode !== "extra" && !sess.graded.has(c)){ grade(c, r.g, {keepStage: r.hinted}); sess.graded.add(c); }
-  if (r.guess && r.guess !== c){
-    const key = c + ">" + r.guess; S.confusions[key] = (S.confusions[key] || 0) + 1;
-    sess.mixups.push([c, r.guess]);
-  }
-  save();
-  if (missed && it.n < 3){
-    const gap = r.quick ? 3 : 5;
-    sess.q.splice(Math.min(sess.q.length, sess.i + 1 + gap), 0, {k: "ask", c, n: it.n + 1});
-  }
-  if (r.ok){
+// Shows the verdict and moves on, or shows the miss screen. typed: the typed answer, if any.
+function afterAnswer(c, r, typed){
+  if (r.verdict !== "miss"){
+    // "hinted": a right pick after "Show choices". Shown as right, but it counts as a miss everywhere else.
+    const hinted = r.verdict === "hinted", typo = r.verdict === "typo";
     const v = document.createElement("p");
-    v.className = r.hinted ? "verdict" : "verdict good";
-    v.textContent = r.hinted ? "Right, but using choices counts as a miss. It’ll come back."
-      : r.typo ? `Correct. It’s spelled ${BY[c].n}.` : `${BY[c].n}`;
+    v.className = hinted ? "verdict" : "verdict good";
+    v.textContent = hinted ? "Right, but using choices counts as a miss. It’ll come back."
+      : typo ? `Correct. It’s spelled ${BY[c].n}.` : `${BY[c].n}`;
     $("#stage").appendChild(v);
     sess.view = "done-good";
-    sess.timer = setTimeout(() => next(), r.hinted ? 2000 : r.typo ? 1500 : 650);
+    sess.timer = setTimeout(() => next(), hinted ? 2000 : typo ? 1500 : 650);
   } else {
-    sess.timer = setTimeout(() => showMiss(c, r), sess.view === "mc" ? 450 : 350);
+    sess.timer = setTimeout(() => showMiss(c, r, typed), sess.view === "mc" ? 450 : 350);
   }
 }
-function showMiss(c, r){
+function showMiss(c, r, typed){
   if (!sess) return;
   sess.view = "miss"; sess.missAt = performance.now();
   const ans = BY[c];
@@ -905,7 +1005,7 @@ function showMiss(c, r){
       </div>`;
   } else {
     body = `
-      ${r.typedRaw && !r.dunno ? `<p class="tag">“${esc(r.typedRaw)}” didn’t match a country.</p>` : ""}
+      ${typed ? `<p class="tag">“${esc(typed)}” didn’t match a country.</p>` : ""}
       <div class="mast">${img(c, "Flag of " + ans.n)}</div>
       <h2 class="name" style="color:var(--good)">${esc(ans.n)}</h2>
       <p class="hook">${esc(ans.h)}</p>
@@ -916,11 +1016,11 @@ function showMiss(c, r){
 }
 
 /* ---------- Summary ---------- */
+// s: the summary from the session's end() in core.js.
 function showSummary(s){
   const el = $("#summary");
-  const pairs = {}; s.mixups.forEach(([a,b]) => { const k = a + ">" + b; pairs[k] = (pairs[k] || 0) + 1; });
-  const list = Object.keys(pairs).slice(0, 6);
-  const lead = `${s.first.total} ${s.first.total === 1 ? "flag" : "flags"}, <strong>${s.first.right} right on the first try</strong>.`
+  const list = s.mixups.slice(0, 6);
+  const lead = `${s.total} ${s.total === 1 ? "flag" : "flags"}, <strong>${s.right} right on the first try</strong>.`
     + (s.mode === "extra" ? " Extra practice doesn’t change your review schedule." : "");
   const again = s.mode !== "extra" ? ""
     : `<button class="btn btn-quiet" type="button" data-act="another">${run.n === Infinity ? `All ${practiced().length} again` : `Another ${run.n}`}</button>`;
@@ -928,8 +1028,8 @@ function showSummary(s){
   el.innerHTML = `
     <h2>${s.mode === "extra" ? "Practice done" : "Session done"}</h2>
     <p class="lead">${lead}</p>
-    ${list.length ? `<div class="mixups"><p class="note">Mixed up today</p>${list.map(k => { const [a,b] = k.split(">");
-      return `<div class="mixup">${img(a, "")}<span><strong>${esc(BY[a].n)}</strong></span><span class="vs">mistaken for</span>${img(b, "")}<span>${esc(BY[b].n)}</span></div>`; }).join("")}</div>` : ""}
+    ${list.length ? `<div class="mixups"><p class="note">Mixed up today</p>${list.map(([a,b]) =>
+      `<div class="mixup">${img(a, "")}<span><strong>${esc(BY[a].n)}</strong></span><span class="vs">mistaken for</span>${img(b, "")}<span>${esc(BY[b].n)}</span></div>`).join("")}</div>` : ""}
     <div class="actions"><button class="btn btn-primary" type="button" data-act="home">Back to my flags<span class="kbd">Enter</span></button>${again}</div>`;
   el.classList.remove("hidden");
   el.querySelector("[data-act=home]").focus({preventScroll: true});
@@ -965,7 +1065,7 @@ document.addEventListener("click", e => {
   else if (a === "extra"){ run = {n: t.dataset.n === "all" ? Infinity : +t.dataset.n, skip: new Set(), last: new Set()}; startSession("extra"); }
   else if (a === "another") startSession("extra");
   else if (a === "next"){ if (sess){ clearTimeout(sess.timer); next(); } }
-  else if (a === "hint"){ if (sess && !sess.busy) renderAsk(sess.q[sess.i], true); }
+  else if (a === "hint"){ if (sess) renderAsk(true); }
   else if (a === "dunno") dunno();
   else if (a === "reload") location.reload();
   else if (a === "home") goHome();
@@ -994,10 +1094,10 @@ document.addEventListener("keydown", e => {
 $("#endSession").addEventListener("click", endSession);
 $("#openSettings").addEventListener("click", () => { renderSettings(); $("#settings").showModal(); });
 $("#settingsForm").addEventListener("change", e => {
-  if (e.target.name === "perDay") S.settings.perDay = +e.target.value;
-  if (e.target.name === "theme"){ S.settings.theme = e.target.value; applyTheme(); }
-  if (e.target.id === "kosovo") S.settings.kosovo = e.target.checked;
-  save(); renderHome();
+  if (e.target.name === "perDay") setSetting("perDay", +e.target.value);
+  if (e.target.name === "theme"){ setSetting("theme", e.target.value); applyTheme(); }
+  if (e.target.id === "kosovo") setSetting("kosovo", e.target.checked);
+  renderHome();
 });
 $("#resetBtn").addEventListener("click", e => {
   const b = e.currentTarget;
