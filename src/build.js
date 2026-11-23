@@ -67,14 +67,19 @@ function build() {
   return { html, problems };
 }
 
+// What to show when build() finds problems. The test of the build shows the same message.
+function problemsMessage(problems) {
+  return "Build stopped. Fix these in src/:\n  " + problems.join("\n  ");
+}
+
 if (require.main === module) {
   const { html, problems } = build();
   if (problems.length) {
-    console.error("Build stopped. Fix these in src/:\n  " + problems.join("\n  "));
+    console.error(problemsMessage(problems));
     process.exit(1);
   }
   fs.writeFileSync(path.join(__dirname, "..", "index.html"), html);
   console.log(`Wrote index.html (${(html.length / 1048576).toFixed(2)} MB, ${COUNTRIES.length} flags)`);
 }
 
-module.exports = { build };
+module.exports = { build, problemsMessage };
