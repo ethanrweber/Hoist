@@ -1,16 +1,21 @@
 // Tests for src/core.js. Run with: npm test
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("fs");
+const path = require("path");
+const vm = require("vm");
 const { COUNTRIES, FAMILIES } = require("../src/countries.js");
 const NEIGHBORS = require("../src/neighbors.json");
-const { createCore, blankState, isNewer, migrate, VERSION, fsrs, retr, ivlFor, W } = require("../src/core.js");
+const HoistCore = require("../src/core.js");
+const { blankState, isNewer, migrate, VERSION, fsrs, retr, ivlFor, W } = HoistCore;
 
 const DAY = 864e5;
 // A core over fresh progress, with a clock the test moves forward and fixed randomness (or `random`).
-function setup(settings, random = () => 0.5){
-  const t = { S: blankState(), now: Date.UTC(2026, 0, 15, 12) };
+// `Core` is what src/core.js exports: the one Node loaded, unless a test loads its own (see sandboxedCore).
+function setup(settings, random = () => 0.5, Core = HoistCore){
+  const t = { S: Core.blankState(), now: Date.UTC(2026, 0, 15, 12) };
   Object.assign(t.S.settings, settings);
-  t.core = createCore({ countries: COUNTRIES, families: FAMILIES, neighbors: NEIGHBORS },
+  t.core = Core.createCore({ countries: COUNTRIES, families: FAMILIES, neighbors: NEIGHBORS },
     { state: () => t.S, now: () => t.now, random });
   t.nextDay = () => { t.now += DAY; };
   return t;
@@ -130,6 +135,12 @@ test("today's numbers: reading them never changes saved progress", () => {
   t.core.planToday(); t.core.newAllowance(); t.core.today();
   assert.equal(JSON.stringify(t.S), before);
   assert.equal(t.core.newAllowance(), 10);
+  // With today's counters too, today() hands out a copy: only touchDay() gives the stored ones.
+  Object.assign(t.core.touchDay(), { newDone: 3, bonus: 5 });
+  const d = t.core.today(); d.newDone = 0; d.bonus = 0;
+  assert.deepEqual(t.S.day, { n: t.core.dayNum(), newDone: 3, bonus: 5 },
+    "Changing what today() returns changed saved progress. today() must return a copy: use touchDay() to change the counters.");
+  assert.equal(t.core.newAllowance(), 12);
 });
 
 /* ---------- Extra practice ---------- */
@@ -288,13 +299,44 @@ test("saved progress: a save from a newer version is recognized", () => {
 });
 
 // What a save holds at each VERSION: the keys at the top level, in day and settings, and across all cards.
-// Earlier versions stay on record.
+// A "?" marks a key only some saves have. Earlier versions stay on record, to check SAVES below.
 const SAVED_SHAPE = {
+  1: {
+    top: ["cards", "confusions", "day", "settings", "v"],
+    day: ["bonus", "n", "newDone"],
+    settings: ["dark", "kosovo", "perDay"],
+    cards: ["D", "S", "due", "lapses", "last", "reps", "stage", "streak"],
+  },
   2: {
     top: ["cards", "confusions", "day", "settings", "v"],
     day: ["bonus", "n", "newDone"],
     settings: ["kosovo", "perDay", "theme"],
-    cards: ["D", "S", "due", "lapses", "last", "missedOn", "reps", "stage", "streak"],
+    // A card gets missedOn at its first miss.
+    cards: ["D", "S", "due", "lapses", "last", "missedOn?", "reps", "stage", "streak"],
+  },
+};
+// A full save from each version, as that version wrote it, with a card holding every key cards had then. Add one
+// along with each SAVED_SHAPE and keep them all: the upgrade test below checks that UPGRADES carries each one over.
+const SAVES = {
+  1: {
+    v: 1,
+    cards: {
+      td: { stage: "mc", streak: 1, reps: 3, lapses: 1, S: 1.2093, D: 7.3416, last: 20770, due: 20771 },
+      fr: { stage: "typed", streak: 0, reps: 2, lapses: 0, S: 14.9694, D: 5.0867, last: 20769, due: 20772 },
+    },
+    day: { n: 20770, newDone: 10, bonus: 5 },
+    settings: { perDay: 15, kosovo: true, dark: true },
+    confusions: { "td>ro": 2 },
+  },
+  2: {
+    v: 2,
+    cards: {
+      td: { stage: "mc", streak: 1, reps: 5, lapses: 2, S: 0.8571, D: 8.1022, last: 20776, due: 20777, missedOn: 20776 },
+      fr: { stage: "typed", streak: 2, reps: 4, lapses: 0, S: 31.4462, D: 4.9718, last: 20775, due: 20806 },
+    },
+    day: { n: 20776, newDone: 8, bonus: 5 },
+    settings: { perDay: 10, kosovo: false, theme: "dark" },
+    confusions: { "td>ro": 3, "ro>td": 1 },
   },
 };
 // A state's keys, in the form of SAVED_SHAPE.
@@ -302,11 +344,28 @@ function shapeOf(S){
   const keys = o => Object.keys(o).sort();
   return { top: keys(S), day: keys(S.day), settings: keys(S.settings), cards: [...new Set(Object.values(S.cards).flatMap(keys))].sort() };
 }
+// A SAVED_SHAPE entry with every key, "?" or not: the shape of a save that has them all.
+const everyKey = shape => shape && Object.fromEntries(Object.entries(shape).map(([part, keys]) => [part, keys.map(k => k.replace(/\?$/, ""))]));
+// How a state differs from SAVED_SHAPE[v]: keys it has that the entry doesn't list (left over from an older
+// version, say), and keys it lacks that aren't marked "?". Each card is compared on its own.
+function shapeProblems(S, v){
+  const want = SAVED_SHAPE[v];
+  const { top, day, settings } = shapeOf(S);
+  const parts = [["the top level", top, want.top], ["day", day, want.day], ["settings", settings, want.settings],
+    ...Object.entries(S.cards).map(([c, card]) => [`card "${c}"`, Object.keys(card), want.cards])];
+  const out = [];
+  for (const [part, has, listed] of parts){
+    const all = listed.map(k => k.replace(/\?$/, ""));
+    for (const k of has) if (!all.includes(k)) out.push(`${part} has "${k}", which SAVED_SHAPE[${v}] doesn't list`);
+    for (const k of listed) if (!k.endsWith("?") && !has.includes(k)) out.push(`${part} lacks "${k}"`);
+  }
+  return out;
+}
 
-test("saved progress: what gets saved matches the snapshot for this VERSION", () => {
-  // Plays through everything that writes saved progress, with Kosovo on: 20 days of sessions with right answers,
-  // hard ones and misses, a right pick after Show choices, "Learn 5 more", and extra practice.
-  const t = setup({ kosovo: true }, seeded(11)), answer = seeded(12);
+// Plays through everything that writes saved progress, with Kosovo on: 20 days of sessions with right answers,
+// hard ones and misses, a right pick after Show choices, "Learn 5 more", and extra practice. Returns the setup.
+function playThrough(Core){
+  const t = setup({ kosovo: true }, seeded(11), Core), answer = seeded(12);
   for (let d = 0; d < 20; d++){
     if (d === 5) t.core.touchDay().bonus += 5;
     for (const it of t.core.buildQueue("normal")){
@@ -317,63 +376,149 @@ test("saved progress: what gets saved matches the snapshot for this VERSION", ()
     playRun(t, 20, 2);
     t.nextDay();
   }
-  const saved = JSON.parse(JSON.stringify(t.S));
+  return t;
+}
+
+test("saved progress: what gets saved matches the snapshot for this VERSION", () => {
+  const saved = JSON.parse(JSON.stringify(playThrough().S));
   // The page adds a key for each pair of flags mixed up, so only its type is checked.
   assert.ok(saved.confusions && typeof saved.confusions === "object" && !Array.isArray(saved.confusions), "confusions should be an object");
   const shape = shapeOf(saved);
-  assert.deepEqual(shape, SAVED_SHAPE[VERSION], `What gets saved doesn't match SAVED_SHAPE[${VERSION}] in test/core.test.js, `
+  // The play-through reaches every key, so the ones marked "?" must be there too.
+  assert.deepEqual(shape, everyKey(SAVED_SHAPE[VERSION]), `What gets saved doesn't match SAVED_SHAPE[${VERSION}] in test/core.test.js, `
     + "or there is none. When what gets saved changes, raise VERSION in src/core.js, add an UPGRADES step there that "
-    + "turns saves from the old version into the new shape, and add a SAVED_SHAPE for the new VERSION here. "
-    + `What gets saved now:\n  ${JSON.stringify(shape)}`);
+    + "turns saves from the old version into the new shape, and add a SAVED_SHAPE for the new VERSION here, with \"?\" "
+    + `after any key only some saves have. What gets saved now:\n  ${JSON.stringify(shape)}`);
 });
 
-test("saved progress: every older version has an upgrade step", () => {
-  // From the newest down, so the first failure names the missing step.
-  for (let v = VERSION - 1; v >= 1; v--){
-    try { migrate({ v }); }
-    catch (e){
-      assert.fail(`Upgrading a version ${v} save threw "${e.message}". UPGRADES in src/core.js needs a step for every `
-        + `version from 1 to ${VERSION - 1} (UPGRADES[${v}] turns a version ${v} save into a version ${v + 1} save), and each `
-        + "step must handle saves with fields missing.");
-    }
+test("saved progress: a full save from every older version upgrades to this VERSION's shape", () => {
+  const missing = [];
+  for (let v = 1; v < VERSION; v++) if (!SAVES[v]) missing.push(v);
+  assert.deepEqual(missing, [], `SAVES in test/core.test.js has no save from version ${missing.join(", ")}. When you raise `
+    + "VERSION, add a full save from the old version there, as that version wrote it, with a card holding every card key. "
+    + "This test upgrades it, to check that UPGRADES carries existing players' progress over.");
+  assert.ok(SAVED_SHAPE[VERSION], `There's no SAVED_SHAPE[${VERSION}] in test/core.test.js: add it (see the snapshot test above).`);
+  const problems = [];
+  // From the newest down, so the first problem names the newest step.
+  for (let v = VERSION; v >= 1; v--){
+    if (!SAVES[v]) continue;
+    assert.deepEqual(shapeOf(SAVES[v]), everyKey(SAVED_SHAPE[v]), `SAVES[${v}] in test/core.test.js should be a full `
+      + `version ${v} save, with every key SAVED_SHAPE[${v}] lists (at least one card holding every card key) and no others.`);
+    let s;
+    try { s = migrate(structuredClone(SAVES[v])); }
+    catch (e){ problems.push(`version ${v} save: upgrading it threw "${e.message}"`); continue; }
+    const lost = Object.keys(SAVES[v].cards).filter(c => !s.cards[c]);
+    if (lost.length) problems.push(`version ${v} save: upgrading it lost cards ${lost.join(", ")}`);
+    for (const p of shapeProblems(s, VERSION)) problems.push(`version ${v} save: ${p}`);
   }
+  assert.deepEqual(problems, [], `Upgrading older saves doesn't give the shape in SAVED_SHAPE[${VERSION}]. UPGRADES in `
+    + `src/core.js needs a step for every version from 1 to ${VERSION - 1} (UPGRADES[v] turns a version v save into a `
+    + "version v + 1 save), and each step must add, rename or remove every key that changed in that version. "
+    + "Found:\n  " + problems.join("\n  "));
 });
 
-test("saved progress: read-only functions never change it, even with counters left over from an earlier day", () => {
+// Functions createCore returns that change saved progress.
+const WRITERS = ["touchDay", "introduce", "grade"];
+// Every other function createCore returns, each called with realistic arguments: `codes`, flags to ask about, and
+// `run`, an extra practice run (see readArgs).
+const READS = {
+  dayNum: k => k.dayNum(), today: k => k.today(), active: k => k.active(), dueList: k => k.dueList(),
+  practiced: k => k.practiced(), newAllowance: k => k.newAllowance(), planToday: k => k.planToday(), pickNew: k => k.pickNew(10),
+  isActive: (k, { codes }) => codes.map(c => k.isActive(c)), card: (k, { codes }) => codes.map(c => k.card(c)),
+  seen: (k, { codes }) => codes.map(c => k.seen(c)), mastered: (k, { codes }) => codes.map(c => k.mastered(c)),
+  status: (k, { codes }) => codes.map(c => k.status(c)),
+  lookalikes: (k, { codes }) => codes.map(c => k.lookalikes(c, 5)), distractors: (k, { codes }) => codes.map(c => k.distractors(c)),
+  // The right name, a typo of it, a typo as close to another country, another country's name, and a blank.
+  judge: k => [["Cote d'Ivoire", "ci"], ["Argentna", "ar"], ["Austrlia", "au"], ["Romania", "td"], ["", "fr"]].map(([s, c]) => k.judge(s, c)),
+  buildQueue: (k, { run }) => [k.buildQueue("normal"), k.buildQueue("extra"), k.buildQueue("extra", run)],
+  afterRound: (k, { codes, run }) => k.afterRound(run, new Set(codes)),
+  shuffle: (k, { codes }) => k.shuffle(codes),
+};
+// Arguments for READS: the first three flags seen, one not seen yet (if any is left), Kosovo, and an extra practice
+// run two rounds in, as afterRound leaves it.
+function readArgs(t){
+  const seenCodes = Object.keys(t.S.cards), unseen = CODES.find(c => !t.S.cards[c]);
+  return {
+    codes: [...seenCodes.slice(0, 3), ...(unseen ? [unseen] : []), "xk"],
+    run: { n: 20, skip: new Set(seenCodes.slice(0, 40)), last: new Set(seenCodes.slice(20, 40)) },
+  };
+}
+
+test("saved progress: read-only functions never change it, with day counters from an earlier day or from today", () => {
   const t = setup({ kosovo: true }, seeded(13)); practice(t, 8);
   // Today's misses don't touch the day counters, so those are still yesterday's.
-  const seenCodes = Object.keys(t.S.cards), [missed, hinted] = seenCodes;
+  const [missed, hinted] = Object.keys(t.S.cards);
   t.core.grade(missed, 1); t.core.grade(hinted, 1, { keepStage: true });
   t.S.confusions = { [`${missed}>fr`]: 2 };
-  // Taken before any read is called, so a read that writes shows up below.
-  const before = JSON.stringify(t.S);
-  assert.notEqual(t.S.day.n, t.core.dayNum());
-  const codes = [missed, hinted, seenCodes[2], CODES.find(c => !t.S.cards[c]), "xk"];
-  // An extra practice run two rounds in, as afterRound leaves it.
-  const run = { n: 20, skip: new Set(seenCodes.slice(0, 40)), last: new Set(seenCodes.slice(20, 40)) };
+  const args = readArgs(t);
 
-  // Functions that change saved progress.
-  const WRITERS = ["touchDay", "introduce", "grade"];
-  // Every other function createCore returns, each called with realistic arguments.
-  const READS = {
-    dayNum: k => k.dayNum(), today: k => k.today(), active: k => k.active(), dueList: k => k.dueList(),
-    practiced: k => k.practiced(), newAllowance: k => k.newAllowance(), planToday: k => k.planToday(), pickNew: k => k.pickNew(10),
-    isActive: k => codes.map(c => k.isActive(c)), card: k => codes.map(c => k.card(c)), seen: k => codes.map(c => k.seen(c)),
-    mastered: k => codes.map(c => k.mastered(c)), status: k => codes.map(c => k.status(c)),
-    lookalikes: k => codes.map(c => k.lookalikes(c, 5)), distractors: k => codes.map(c => k.distractors(c)),
-    judge: k => [["Cote d'Ivoire", "ci"], ["Austrlia", "au"], ["Romania", "td"], ["", "fr"]].map(([s, c]) => k.judge(s, c)),
-    buildQueue: k => [k.buildQueue("normal"), k.buildQueue("extra"), k.buildQueue("extra", run)],
-    afterRound: k => k.afterRound(run, new Set(codes)),
-    shuffle: k => k.shuffle(codes),
-  };
   const unsorted = Object.keys(t.core).filter(f => typeof t.core[f] === "function" && !(f in READS) && !WRITERS.includes(f));
   assert.deepEqual(unsorted, [], `createCore returns ${unsorted.join(", ")}, which this test doesn't know about. Add each one `
     + "to WRITERS if it can change saved progress, or to READS with a realistic call if it can't.");
 
-  for (const [f, call] of Object.entries(READS)){
-    call(t.core);
-    assert.ok(JSON.stringify(t.S) === before, `${f} changed saved progress, but it's meant to only read it: the page's next `
-      + "save would store the change. Make it leave the state alone, or if it's meant to write, move it to WRITERS.");
+  assert.notEqual(t.S.day.n, t.core.dayNum());
+  for (const counters of ["left over from an earlier day", "from today"]){
+    // The second time, today's counters, as after "Learn 5 more" five times: big enough that a read clamping them would show.
+    if (counters === "from today") Object.assign(t.core.touchDay(), { newDone: 12, bonus: 25 });
+    // Taken before any read is called, so a read that writes shows up below.
+    const before = JSON.stringify(t.S);
+    for (const [f, call] of Object.entries(READS)){
+      call(t.core, args);
+      assert.ok(JSON.stringify(t.S) === before, `${f} changed saved progress (with day counters ${counters}), but it's meant `
+        + "to only read it: the page's next save would store the change. Make it leave the state alone, or if it's meant "
+        + "to write, move it to WRITERS.");
+    }
+  }
+});
+
+/* ---------- No page code ---------- */
+const CORE_PATH = path.join(__dirname, "..", "src", "core.js");
+// Names the page or Node has. In the sandbox, reading one throws, even through typeof, so a check like
+// `typeof document !== "undefined"` can't hide page code. Using any other name the sandbox lacks throws a ReferenceError.
+const PAGE_AND_NODE = ["window", "self", "document", "location", "navigator", "localStorage", "sessionStorage", "indexedDB",
+  "fetch", "requestAnimationFrame", "setTimeout", "setInterval", "setImmediate", "queueMicrotask", "crypto", "performance",
+  "console", "process", "require", "global", "Buffer"];
+// Loads src/core.js in a fresh context with nothing but the language itself, where reading the clock or randomness
+// directly throws. Returns what core.js exports, through the module object it looks for.
+function sandboxedCore(){
+  const context = vm.createContext({ module: {} });
+  const g = vm.runInContext("globalThis", context);
+  const off = what => { throw Object.assign(new Error(`core.js used ${what}`), { used: what }); };
+  for (const name of PAGE_AND_NODE) Object.defineProperty(g, name, { get: () => off(name) });
+  g.Math.random = () => off("Math.random()");
+  // new Date(ms) still works: dayNum() turns env.now() into a date.
+  const RealDate = g.Date;
+  function SandboxDate(...args){
+    if (!new.target) off("Date()");
+    if (!args.length) off("new Date() with no time");
+    return Reflect.construct(RealDate, args, new.target);
+  }
+  Object.assign(SandboxDate, { prototype: RealDate.prototype, UTC: RealDate.UTC, parse: RealDate.parse, now: () => off("Date.now()") });
+  g.Date = SandboxDate;
+  vm.runInContext(fs.readFileSync(CORE_PATH, "utf8"), context, { filename: CORE_PATH });
+  return context.module.exports;
+}
+
+test("core.js: no page code, and the clock and randomness come only through env", () => {
+  // Runs everything the page does with core.js, in the sandbox. Code that never runs isn't checked this way, but
+  // code that never runs can't misbehave either.
+  try {
+    const Core = sandboxedCore();
+    const early = setup({ kosovo: true }, seeded(13), Core); practice(early, 3);
+    const late = playThrough(Core);
+    for (const t of [early, late]){
+      const [a, b] = Object.keys(t.S.cards);
+      t.S.confusions = { [`${a}>${b}`]: 2, [`${b}>fr`]: 1 };   // mix-ups, as the page records them
+      for (const call of Object.values(READS)) call(t.core, readArgs(t));
+    }
+    for (const v in SAVES) Core.migrate(structuredClone(SAVES[v]));
+    Core.migrate(null); Core.isNewer({ v: Core.VERSION + 1 });
+  } catch (e){
+    const used = e.used || (e.name === "ReferenceError" && (/^(\S+) is not defined/.exec(e.message) || [])[1]);
+    if (!used) throw e;
+    const line = (/src[\\/]core\.js:(\d+)/.exec(e.stack) || [])[1];
+    assert.fail(`src/core.js${line ? ` line ${line}` : ""} uses ${used}. core.js must not use page or Node globals, and must `
+      + "take the clock and randomness only through env (now, random) in createCore, so the page and the tests control them.");
   }
 });
 

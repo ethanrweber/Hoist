@@ -374,8 +374,9 @@ function createCore(data, env){
 
   /* ---------- Days: a day rolls over at 4am local time ---------- */
   function dayNum(){ const d = new Date(now() - 4*3600e3); return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 864e5); }
-  // Today's counters. Reading never changes the state: counters from an earlier day read as zeros.
-  function today(){ const t = dayNum(), d = state().day; return d.n === t ? d : {n: t, newDone: 0, bonus: 0}; }
+  // Today's counters, as a copy, so changing it can't change the state (touchDay gives the stored ones).
+  // Counters from an earlier day read as zeros.
+  function today(){ const t = dayNum(), d = state().day; return d.n === t ? Object.assign({}, d) : {n: t, newDone: 0, bonus: 0}; }
   // Today's counters, stored in the state so they can be changed. Call only right before saving.
   function touchDay(){ const s = state(); s.day = today(); return s.day; }
 
