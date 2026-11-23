@@ -1,18 +1,61 @@
 // Checks on the source files themselves, for rules that are easy to miss when editing src/. Run with: npm test
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { build, problemsMessage } from "../src/build.ts";
+import { COUNTRIES } from "../src/countries.ts";
 
 const root = path.join(import.meta.dirname, "..");
 const read = (f: string) => fs.readFileSync(path.join(root, f), "utf8");
 
 /* ---------- The build ---------- */
-test("build: every country code checks out, and index.html is built from the current src/", () => {
-  const { html, problems } = build();
+test("build: every country code checks out, and index.html is built from the current src/", async () => {
+  const { html, problems } = await build();
   assert.deepEqual(problems, [], problemsMessage(problems));
   assert.ok(html === read("index.html"), "index.html is out of date: run npm run build");
+});
+
+test("build: gives the same index.html from any working directory", async () => {
+  const { html } = await build();
+  // In a new Node process started in an empty folder: esbuild takes its default working directory from
+  // process.cwd() when it loads, so changing folders in this process wouldn't change what it does.
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "hoist-build-"));
+  let there: string;
+  try {
+    const script =
+      `import { build } from ${JSON.stringify(pathToFileURL(path.join(root, "src", "build.ts")).href)};\n` +
+      'process.stdout.write((await build()).html ?? "");';
+    there = execFileSync(process.execPath, ["--input-type=module", "--eval", script], {
+      cwd: elsewhere,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } finally {
+    fs.rmSync(elsewhere, { recursive: true });
+  }
+  assert.ok(
+    html !== null && there === html,
+    "build() gives a different index.html when run from another folder, so npm run build and this test's " +
+      "up-to-date check depend on where they're run. Give every esbuild call in src/build.ts " +
+      "absWorkingDir (the repo root), so the paths it writes don't depend on the working directory.",
+  );
+});
+
+/* ---------- The data ---------- */
+test("countries.ts: names and hooks use curly apostrophes", () => {
+  const straight = COUNTRIES.flatMap((c) =>
+    [c.n, c.h].filter((s) => s.includes("'")).map((s) => `${c.c}: ${s}`),
+  );
+  assert.deepEqual(
+    straight,
+    [],
+    "The page shows names (n) and hooks (h) as they are in src/countries.ts. Use a curly apostrophe (’) " +
+      "instead of ' in these. Alternate names (a) are only for checking typed answers, which treats both the same.",
+  );
 });
 
 /* ---------- Buttons ---------- */

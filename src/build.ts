@@ -1,20 +1,35 @@
-// Builds index.html (one self-contained file) from src/template.html, the page script (src/page.ts, bundled with
-// src/core.ts by esbuild), the country data and the flag SVGs.
+// Builds index.html (one self-contained file) from src/template.html and the page script: src/page.ts bundled by
+// esbuild with what it imports (src/core.ts, the country data, and the flag SVGs, as the module hoist:flags).
 // Usage: node src/build.ts
 // test/structure.test.ts calls build() to check that the committed index.html is up to date.
 // esbuild only strips the types: npm run typecheck checks them.
 import fs from "node:fs";
 import path from "node:path";
-import { buildSync } from "esbuild";
-import type { Code, Country, Neighbors } from "./core.ts";
+import * as esbuild from "esbuild";
+import type { Code, Neighbors } from "./core.ts";
 import { COUNTRIES, FAMILIES } from "./countries.ts";
 import neighborsJSON from "./neighbors.json" with { type: "json" };
 
 const here = (...p: string[]) => path.join(import.meta.dirname, ...p);
 const neighbors: Neighbors = neighborsJSON;
 
-// Returns {html, problems}. If any country code is wrong, problems lists each one and there is no html.
-export function build(): { html: string | null; problems: string[] } {
+// Resolves `import FLAGS from "hoist:flags"` in page.ts to a module made from `flags`, each flag's SVG by code.
+// Its type is in hoist-flags.d.ts.
+function flagsModule(flags: Record<Code, string>): esbuild.Plugin {
+  return {
+    name: "hoist-flags",
+    setup(b) {
+      b.onResolve({ filter: /^hoist:flags$/ }, () => ({ path: "flags", namespace: "hoist" }));
+      b.onLoad({ filter: /^flags$/, namespace: "hoist" }, () => ({
+        contents: `export default ${JSON.stringify(flags)};`,
+        loader: "js",
+      }));
+    },
+  };
+}
+
+// Resolves to {html, problems}. If any country code is wrong, problems lists each one and there is no html.
+export async function build(): Promise<{ html: string | null; problems: string[] }> {
   // Every code must name a real country, so a typo fails the build instead of being silently ignored by the app.
   const problems: string[] = [];
   const codes = new Set<Code>();
@@ -44,14 +59,6 @@ export function build(): { html: string | null; problems: string[] } {
   }
   if (problems.length) return { html: null, problems };
 
-  const curly = (s: string) => s.replace(/'/g, "’");
-  const countries = COUNTRIES.map((c) => {
-    const o: Country = { c: c.c, n: curly(c.n), r: c.r, h: curly(c.h) };
-    if (c.a) o.a = c.a;
-    if (c.optional) o.optional = true;
-    return o;
-  });
-
   const flags: Record<Code, string> = {};
   for (const c of COUNTRIES) {
     let svg = fs.readFileSync(here("flags", `${c.c}.svg`), "utf8").trim();
@@ -68,31 +75,25 @@ export function build(): { html: string | null; problems: string[] } {
     flags[c.c] = svg;
   }
 
-  // The data, as the globals that page.ts declares. It's all JSON, so escaping "</script" inside it can't change
-  // its meaning.
-  const data = (
-    `const COUNTRIES=${JSON.stringify(countries)};\n` +
-    `const FAMILIES=${JSON.stringify(FAMILIES)};\n` +
-    `const NEIGHBORS=${JSON.stringify(neighbors)};\n` +
-    `const FLAGS=${JSON.stringify(flags)};`
-  ).replace(/<\/script/gi, "<\\/script");
-  // The page script and core.ts as one classic script, unminified. ES modules are strict, but a script esbuild makes
-  // from them isn't unless it says so.
-  const page = buildSync({
+  // The page script with everything it imports, as one classic script, unminified. ES modules are strict, but a
+  // script esbuild makes from them isn't unless it says so. absWorkingDir fixes the paths esbuild writes in its
+  // comments ("// src/core.ts"), so the output is the same from any working directory.
+  const result = await esbuild.build({
     entryPoints: [here("page.ts")],
+    absWorkingDir: here(".."),
     bundle: true,
     format: "iife",
     charset: "utf8",
     banner: { js: '"use strict";' },
+    plugins: [flagsModule(flags)],
     write: false,
-  }).outputFiles[0].text;
+  });
+  const page = result.outputFiles[0].text;
+  // The whole script, data and flags included. esbuild escapes "</script" in what it writes; this checks that it did.
   if (/<\/script/i.test(page))
     throw new Error('The page script must not contain "</script" (it would end the inline script)');
 
-  const html = fs
-    .readFileSync(here("template.html"), "utf8")
-    .replace("/*__DATA__*/", () => data)
-    .replace("/*__PAGE__*/", () => page);
+  const html = fs.readFileSync(here("template.html"), "utf8").replace("/*__PAGE__*/", () => page);
   return { html, problems };
 }
 
@@ -102,7 +103,7 @@ export function problemsMessage(problems: string[]): string {
 }
 
 if (import.meta.main) {
-  const { html, problems } = build();
+  const { html, problems } = await build();
   if (html === null) {
     console.error(problemsMessage(problems));
     process.exit(1);

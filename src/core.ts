@@ -5,7 +5,9 @@
 /* ---------- Types ---------- */
 // A country's code, lowercase ("fr"). It names the flag's SVG in src/flags/ too.
 export type Code = string;
-export type Region = "Africa" | "Americas" | "Asia" | "Europe" | "Oceania";
+// The regions, in the order the page's wall shows them. Region comes from this list, so the two can't differ.
+export const REGIONS = ["Africa", "Americas", "Asia", "Europe", "Oceania"] as const;
+export type Region = (typeof REGIONS)[number];
 // A country, as src/countries.ts lists it. c: code, n: display name, a: other accepted answers, r: region,
 // h: hook (the visual "tell"), optional: a flag only asked about when its setting is on (Kosovo).
 export interface Country {
@@ -52,7 +54,9 @@ export interface DayCounters {
   newDone: number;
   bonus: number;
 }
-export type Theme = "system" | "light" | "dark";
+// The themes, in the order settings shows them. Theme comes from this list, so the two can't differ.
+export const THEMES = ["system", "light", "dark"] as const;
+export type Theme = (typeof THEMES)[number];
 export interface Settings {
   perDay: number;
   kosovo: boolean;
@@ -122,7 +126,10 @@ export interface AnswerTiming {
   ms?: number;
   firstKeyMs?: number | null;
 }
-export type Verdict = "right" | "typo" | "hinted" | "miss" | "empty" | "ambiguous";
+// Every verdict an answer can get (see answer in session). Verdict comes from this list, so the tests that check
+// every kind of answer was given can't miss a new one.
+export const VERDICTS = ["right", "typo", "hinted", "miss", "empty", "ambiguous"] as const;
+export type Verdict = (typeof VERDICTS)[number];
 // What an answer meant (see answer in session).
 export interface AnswerResult {
   verdict: Verdict;

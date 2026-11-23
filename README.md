@@ -19,11 +19,11 @@ Progress is saved in your browser, so each browser or device keeps its own progr
 
 Everything ships as one file, `index.html`. To change it, edit the sources, which are TypeScript, and rebuild:
 
-- `src/countries.ts` has each country's name, accepted alternate names, region and one-line description, plus the look-alike families.
+- `src/countries.ts` has each country's name, accepted alternate names, region and one-line description, plus the look-alike families. Names and descriptions appear on the page as written, so they use curly apostrophes (’).
 - `src/core.ts` holds the rules: scheduling, which flags are new each day, building and running a session (what each answer means, how it's graded, when a missed flag comes back), checking typed answers, settings, and upgrading saved progress. It has no page code, so it can be tested in Node. It also defines the types the other files share, such as `State` (saved progress), `Country` and `Session`.
 - `src/page.ts` is the page's script: it draws screens, turns clicks and keys into answers for `core.ts`, and saves progress in the browser.
 - `src/template.html` is the page's HTML and CSS.
-- `src/build.ts` builds `index.html`: it bundles `page.ts` and `core.ts` into one script with esbuild, and puts it in `template.html` along with the country data and the flags, which the page reads as the globals `COUNTRIES`, `FAMILIES`, `NEIGHBORS` and `FLAGS`.
+- `src/build.ts` builds `index.html`: it bundles `page.ts` with everything it imports into one script with esbuild, and puts it in `template.html`. The page imports the rules from `core.ts` and the data from `countries.ts` and `neighbors.json`, and the flags from `hoist:flags`, a module the build makes from `src/flags/` (its type is in `src/hoist-flags.d.ts`). So the data is type-checked where the page uses it.
 - `src/flags/` holds the flag SVGs. `src/neighbors.json` lists the most similar-looking flags for each one, used as extra wrong answers.
 
 You need Node.js 24.2 or later, which runs TypeScript files directly. Install the development tools once with `npm install`, then:

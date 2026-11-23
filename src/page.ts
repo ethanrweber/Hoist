@@ -1,30 +1,13 @@
 // The page: draws the screens, turns clicks and keys into answers for core.ts, and saves progress in the browser.
-// build.ts bundles it, with core.ts, into the script in index.html.
-import { blankState, createCore, isNewer, migrate } from "./core.ts";
-import type {
-  AnswerResult,
-  Code,
-  Country,
-  Family,
-  Mode,
-  Neighbors,
-  Region,
-  Run,
-  Session,
-  State,
-  Summary,
-  Theme,
-} from "./core.ts";
-
-// The data, from a script that build.ts puts before this one: COUNTRIES and FAMILIES from countries.ts (with
-// curly apostrophes in names and hooks), NEIGHBORS from neighbors.json, and FLAGS, each flag's SVG by code.
-declare const COUNTRIES: readonly Country[];
-declare const FAMILIES: readonly Family[];
-declare const NEIGHBORS: Neighbors;
-declare const FLAGS: Readonly<Record<Code, string>>;
+// build.ts bundles it, with core.ts and the data, into the script in index.html.
+import { blankState, createCore, isNewer, migrate, REGIONS, THEMES } from "./core.ts";
+import type { AnswerResult, Code, Mode, Run, Session, State, Summary, Theme } from "./core.ts";
+import { COUNTRIES, FAMILIES } from "./countries.ts";
+import NEIGHBORS from "./neighbors.json" with { type: "json" };
+// Each flag's SVG by code. build.ts makes this module from src/flags/ (see hoist-flags.d.ts).
+import FLAGS from "hoist:flags";
 
 const KEY = "hoist.v1";
-const REGIONS: Region[] = ["Africa", "Americas", "Asia", "Europe", "Oceania"];
 // A kind of element, such as HTMLInputElement.
 type ElementClass<T extends Element> = new () => T;
 // The element `selector` finds in `root` (the page unless given). It must be there, and be a `type` (any
@@ -572,6 +555,8 @@ function segHTML(
     )
     .join("");
 }
+// Each theme's button label in settings. A theme added to THEMES in core.ts needs one here.
+const THEME_LABELS: Record<Theme, string> = { system: "System", light: "Light", dark: "Dark" };
 function renderSettings() {
   $("#perDay").innerHTML = segHTML(
     "perDay",
@@ -580,11 +565,7 @@ function renderSettings() {
   );
   $("#theme").innerHTML = segHTML(
     "theme",
-    [
-      ["system", "System"],
-      ["light", "Light"],
-      ["dark", "Dark"],
-    ],
+    THEMES.map((t) => [t, THEME_LABELS[t]]),
     S.settings.theme,
   );
   $("#kosovo", HTMLInputElement).checked = !!S.settings.kosovo;
@@ -593,7 +574,7 @@ function renderSettings() {
   rb.dataset.armed = "";
 }
 // The theme buttons' values are themes, but the DOM types a value as any string.
-const isTheme = (v: string): v is Theme => v === "system" || v === "light" || v === "dark";
+const isTheme = (v: string): v is Theme => THEMES.some((t) => t === v);
 function applyTheme() {
   const t = S.settings.theme;
   if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);

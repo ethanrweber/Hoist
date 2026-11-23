@@ -1,11 +1,10 @@
 // Tests for src/core.ts. Run with: npm test
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import { SourceMap, type SourceMapPayload } from "node:module";
+import { SourceMap, type SourceMapPayload, type SourceOrigin } from "node:module";
 import path from "node:path";
 import vm from "node:vm";
-import { transformSync } from "esbuild";
+import { buildSync } from "esbuild";
 import { COUNTRIES, FAMILIES } from "../src/countries.ts";
 import NEIGHBORS from "../src/neighbors.json" with { type: "json" };
 import * as HoistCore from "../src/core.ts";
@@ -24,7 +23,7 @@ import type {
   State,
   Verdict,
 } from "../src/core.ts";
-const { blankState, isNewer, migrate, VERSION, fsrs, retr, ivlFor, W } = HoistCore;
+const { blankState, isNewer, migrate, VERSION, VERDICTS, fsrs, retr, ivlFor, W } = HoistCore;
 
 // What src/core.ts exports.
 type CoreModule = typeof HoistCore;
@@ -914,7 +913,7 @@ test("sessions: random play keeps every rule", () => {
     assert.equal(end.summary.total, Object.keys(asks).length);
   }
   assert.ok(sessions >= 25, `only ${sessions} sessions had anything to do`);
-  assert.deepEqual([...verdicts].sort(), ["ambiguous", "empty", "hinted", "miss", "right", "typo"]);
+  assert.deepEqual([...verdicts].sort(), [...VERDICTS].sort());
 });
 
 /* ---------- Saved progress ---------- */
@@ -1381,7 +1380,7 @@ test("saved progress: every function that changes it calls env.changed(), so the
 });
 
 /* ---------- No page code ---------- */
-const CORE_PATH = path.join(import.meta.dirname, "..", "src", "core.ts");
+const ROOT = path.join(import.meta.dirname, "..");
 // Names the page or Node has. In the sandbox, reading one throws, even through typeof, so a check like
 // `typeof document !== "undefined"` can't hide page code. Using any other name the sandbox lacks throws a ReferenceError.
 const PAGE_AND_NODE = [
@@ -1408,29 +1407,39 @@ const PAGE_AND_NODE = [
   "Buffer",
   "module",
 ];
-// src/core.ts as a plain script, and a map from its lines back to core.ts. The script sets the global HoistCore to
-// what core.ts exports, and is strict, as core.ts is as an ES module. Stack traces call it core-sandbox.js.
+// src/core.ts bundled with the files it imports as a plain script, and a map from its lines back to those files.
+// The script sets the global HoistCore to what core.ts exports, and is strict, as core.ts is as an ES module. Stack
+// traces call it core-sandbox.js. Nothing is written: the script and its map stay in memory.
 const SANDBOX_FILE = "core-sandbox.js";
 function coreScript() {
-  const { code, map } = transformSync(fs.readFileSync(CORE_PATH, "utf8"), {
-    loader: "ts",
+  const files = buildSync({
+    entryPoints: [path.join(ROOT, "src", "core.ts")],
+    absWorkingDir: ROOT,
+    bundle: true,
     format: "iife",
     globalName: "HoistCore",
-    banner: '"use strict";',
+    banner: { js: '"use strict";' },
     sourcemap: "external",
-    sourcefile: CORE_PATH,
-  });
-  const payload: SourceMapPayload = JSON.parse(map);
-  return { code, map: new SourceMap(payload) };
+    // Only names the output, so the map's file names are relative to the repo root ("src/core.ts").
+    outfile: path.join(ROOT, SANDBOX_FILE),
+    write: false,
+  }).outputFiles;
+  const file = (ext: string) =>
+    must(
+      files.find((f) => f.path.endsWith(ext)),
+      `a ${ext} file from esbuild`,
+    );
+  const payload: SourceMapPayload = JSON.parse(file(".js.map").text);
+  return { code: file(".js").text, map: new SourceMap(payload) };
 }
-// Loads src/core.ts in a fresh context with nothing but the language itself, where reading the clock or randomness
-// directly throws. Returns what core.ts exports, through the global its script sets.
+// Loads src/core.ts (as coreScript makes it) in a fresh context with nothing but the language itself, where reading
+// the clock or randomness directly throws. Returns what core.ts exports, through the global its script sets.
 function sandboxedCore(code: string): CoreModule {
   const sandbox: { HoistCore?: CoreModule } = {};
   const context = vm.createContext(sandbox);
   const g: typeof globalThis = vm.runInContext("globalThis", context);
   const off = (what: string): never => {
-    throw Object.assign(new Error(`core.ts used ${what}`), { used: what });
+    throw Object.assign(new Error(`The core script used ${what}`), { used: what });
   };
   for (const name of PAGE_AND_NODE) Object.defineProperty(g, name, { get: () => off(name) });
   g.Math.random = () => off("Math.random()");
@@ -1464,7 +1473,7 @@ test("core.ts: no page code, and the clock and randomness come only through env"
     const late = playThrough(Core);
     assert.deepEqual(
       [...late.verdicts].sort(),
-      ["ambiguous", "empty", "hinted", "miss", "right", "typo"],
+      [...VERDICTS].sort(),
       "The play-through " +
         "no longer gives every kind of answer, so this test doesn't run all of the session code. Change its seed or play more days.",
     );
@@ -1483,12 +1492,15 @@ test("core.ts: no page code, and the clock and randomness come only through env"
       ("used" in e && typeof e.used === "string" && e.used) ||
       (e.name === "ReferenceError" && /^(\S+) is not defined/.exec(e.message)?.[1]);
     if (!used) throw e;
-    // Where in core.ts: the first line of the script in the stack, mapped back.
+    // Where: the first line of the script in the stack, mapped back to its file (core.ts or a file it imports).
     const at = /core-sandbox\.js:(\d+):(\d+)/.exec(e.stack ?? "");
-    const origin = at ? map.findOrigin(Number(at[1]), Number(at[2])) : {};
-    const line = "lineNumber" in origin ? origin.lineNumber : null;
+    // Empty when there's no line to map, or the map has nothing for it.
+    const origin: Partial<SourceOrigin> = at ? map.findOrigin(Number(at[1]), Number(at[2])) : {};
+    const where = origin.fileName
+      ? `${origin.fileName} line ${origin.lineNumber}`
+      : "src/core.ts or a file it imports";
     assert.fail(
-      `src/core.ts${line ? ` line ${line}` : ""} uses ${used}. core.ts must not use page or Node globals, and must ` +
+      `${where} uses ${used}. core.ts and the files it imports must not use page or Node globals, and must ` +
         "take the clock and randomness only through env (now, random) in createCore, so the page and the tests control them.",
     );
   }
