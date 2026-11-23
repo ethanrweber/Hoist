@@ -11,12 +11,13 @@ const { blankState, isNewer, migrate, VERSION, fsrs, retr, ivlFor, W } = HoistCo
 
 const DAY = 864e5;
 // A core over fresh progress, with a clock the test moves forward and fixed randomness (or `random`).
+// t.changed counts the core's calls to env.changed(), which tell the page to save.
 // `Core` is what src/core.js exports: the one Node loaded, unless a test loads its own (see sandboxedCore).
 function setup(settings, random = () => 0.5, Core = HoistCore){
-  const t = { S: Core.blankState(), now: Date.UTC(2026, 0, 15, 12) };
+  const t = { S: Core.blankState(), now: Date.UTC(2026, 0, 15, 12), changed: 0 };
   Object.assign(t.S.settings, settings);
   t.core = Core.createCore({ countries: COUNTRIES, families: FAMILIES, neighbors: NEIGHBORS },
-    { state: () => t.S, now: () => t.now, random });
+    { state: () => t.S, now: () => t.now, random, changed: () => t.changed++ });
   t.nextDay = () => { t.now += DAY; };
   return t;
 }
@@ -337,6 +338,8 @@ function gradedAs(stage, g, opts){
 test("sessions: picks and typed answers are graded by time, typos and Show choices, on each side of every cutoff", () => {
   const pick = (o, ms) => (s, q) => s.answer({ pick: o === "wrong" ? wrongPick(q, "ar") : o }, { ms });
   const hintedPick = (o, ms) => (s) => pick(o, ms)(s, s.question({ hint: true }));
+  // Show choices, then the question asked again without it: the choices stay until the next card.
+  const askedAgain = (o, ms) => (s) => { s.question({ hint: true }); return pick(o, ms)(s, s.question()); };
   const typed = (text, ms, firstKeyMs = 500) => s => s.answer({ typed: text }, { ms, firstKeyMs });
   // [stage, answer, verdict, quick, grade, keepStage]. A wrong pick's guess is the choice picked.
   const cases = [
@@ -344,8 +347,11 @@ test("sessions: picks and typed answers are graded by time, typos and Show choic
     ["mc", pick("ar", 6001), "right", false, 2],
     ["mc", pick("wrong", 2199), "miss", true, 1],
     ["mc", pick("wrong", 2200), "miss", false, 1],
+    // Show choices is only for typing: on a multiple-choice flag, asking for it changes nothing.
+    ["mc", hintedPick("ar", 1000), "right", false, 3],
     ["typed", hintedPick("ar", 1000), "hinted", false, 1, true],
     ["typed", hintedPick("wrong", 1000), "miss", false, 1],
+    ["typed", askedAgain("ar", 1000), "hinted", false, 1, true],
     ["typed", typed("Argentina", 12000), "right", false, 3],
     ["typed", typed("Argentina", 12001), "right", false, 2],
     ["typed", typed("Argentna", 1000), "typo", false, 2],
@@ -357,12 +363,18 @@ test("sessions: picks and typed answers are graded by time, typos and Show choic
   ];
   for (const [i, [stage, act, verdict, quick, g, keepStage]] of cases.entries()){
     const { r, card } = answerOne(stage, act), name = `case ${i} (${verdict})`;
-    assert.equal(r.verdict, verdict, name);
+    assert.equal(r && r.verdict, verdict, name);
     assert.equal(r.quick, quick, name);
     assert.deepEqual(card, gradedAs(stage, g, { keepStage }), `${name} should grade ${g}`);
   }
   assert.equal(answerOne("typed", typed("Brazil", 3000)).r.guess, "br");
   assert.equal(answerOne("typed", typed("zzzz", 3000)).r.guess, null);
+  // After Show choices, the question is multiple choice until the next card, so a typed answer isn't one.
+  answerOne("typed", s => {
+    s.question({ hint: true }); s.question();
+    assert.equal(s.answer({ typed: "Argentina" }, { ms: 1000, firstKeyMs: 100 }), null,
+      "A typed answer after Show choices was taken. Show choices must hold until next(), even if question() is called again.");
+  });
   // A blank or ambiguous answer isn't one: nothing changes, and the question can still be answered.
   for (const [code, text, verdict] of [["ar", " ", "empty"], ["au", "Austrlia", "ambiguous"]]){
     const t = setup({ perDay: 0 }); dueToday(t, [code], "typed");
@@ -426,7 +438,7 @@ test("sessions: a right pick after Show choices counts as a miss, comes back, an
   assert.equal(t.S.cards.ar.stage, "typed");
   s.next();
   assert.deepEqual(s.current(), { k: "ask", c: "ar", n: 2 });
-  assert.deepEqual(s.question(), { view: "typed" }, "Show choices lasts for one question");
+  assert.deepEqual(s.question(), { view: "typed" }, "Show choices lasts until the next card");
   s.answer({ typed: "Argentina" }, { ms: 1000 });
   assert.deepEqual(s.end().summary, { mode: "normal", right: 0, total: 1, mixups: [] });
 });
@@ -490,10 +502,15 @@ test("sessions: the summary counts first answers, and lists each mix-up once, in
   assert.deepEqual(t.S.confusions, { [`${a}>${x}`]: 2, [`${b}>${y}`]: 1 });
 });
 
-// What core.js says about saving: only session("more"), next() when it returns true, and real answers write.
+// Only session("more"), next() when it introduces a flag, and real answers write.
 test("sessions: starting a normal or extra session, and every session read, leave saved progress alone", () => {
   const t = setup({}, seeded(15)); practice(t, 3);
-  const same = (what, f) => { const before = JSON.stringify(t.S), out = f(); assert.equal(JSON.stringify(t.S), before, `${what} changed saved progress`); return out; };
+  const same = (what, f) => {
+    const before = JSON.stringify(t.S), calls = t.changed, out = f();
+    assert.equal(JSON.stringify(t.S), before, `${what} changed saved progress`);
+    assert.equal(t.changed, calls, `${what} called env.changed() without changing saved progress`);
+    return out;
+  };
   same('session("extra")', () => t.core.session("extra", newRun(20)));
   const s = same('session("normal")', () => t.core.session("normal")), rand = seeded(16);
   for (;;){
@@ -521,15 +538,29 @@ test("sessions: a miss in extra practice doesn't set missedOn, so it doesn't lea
 });
 
 // Many sessions of random events: answers of every kind, answering twice, ending early, another tab introducing a
-// flag, and the day rolling over.
+// flag, and the day rolling over. Every session call that changes saved progress must call env.changed().
 test("sessions: random play keeps every rule", () => {
   const rand = seeded(18), t = setup({}, seeded(19)), verdicts = new Set();
+  // Calls f, and fails if it changed saved progress without calling env.changed(). The state as JSON is kept from
+  // the last call that didn't call changed(), and reused while the state and the count of changed() calls stay the same.
+  let last = {};
+  const told = (what, f) => (...args) => {
+    const calls = t.changed, before = last.S === t.S && last.calls === calls ? last.json : JSON.stringify(t.S), out = f(...args);
+    if (t.changed > calls){ last = {}; return out; }
+    const json = JSON.stringify(t.S);
+    assert.ok(json === before, `${what} changed saved progress without calling env.changed(), so the page won't save the `
+      + "change and it's lost on reload. In src/core.js, call changed() wherever saved progress is written.");
+    last = { S: t.S, calls, json };
+    return out;
+  };
+  // The session with each method checked by told().
+  const watched = s => s && Object.fromEntries(Object.entries(s).map(([k, f]) => [k, typeof f === "function" ? told(k + "()", f) : f]));
   let run = null, sessions = 0;
   for (let n = 0; n < 30; n++){
     if (rand() < 0.5) t.nextDay();
     const mode = oneOf(rand, ["normal", "normal", "more", "extra"]);
     if (mode === "extra" && (!run || rand() < 0.5)) run = newRun(oneOf(rand, [20, 50, Infinity]));
-    const s = t.core.session(mode, run);
+    const s = watched(told(`session("${mode}")`, t.core.session)(mode, run));
     if (!s) continue;
     sessions++;
     const upcoming = t.core.planToday().groups.flat(), cards = mode === "extra" && JSON.stringify(t.S.cards);
@@ -603,12 +634,32 @@ test("saved progress: a save from a newer version is recognized", () => {
   assert.equal(isNewer(null), false);
 });
 
-test("saved progress: odd versions and odd field types never stop the upgrade, and an odd version counts as 1", () => {
-  // Version 1 had settings.dark, so a save that counts as version 1 gets its theme from it.
-  for (const v of [undefined, -1, 0, 1.5, "x", "2", NaN, Infinity, null, true, [], {}]){
-    const s = migrate({ v, settings: { perDay: 15, dark: true } });
-    assert.equal(s.v, VERSION);
-    assert.deepEqual(s.settings, { perDay: 15, kosovo: false, theme: "dark" }, `v: ${typeof v} ${String(v)}`);
+test("saved progress: odd versions and odd field types never stop the upgrade, and isNewer and migrate agree on what a version means", () => {
+  assert.equal(VERSION, 2, "The table below is for VERSION 2. When you raise VERSION, update which upgrade steps each v "
+    + "runs, and how this test tells that a step ran.");
+  // [v, isNewer, the UPGRADES steps migrate runs]. No version, or one below 1 or not a number, is version 1; a fraction
+  // counts as the version below it; anything past VERSION is newer, and gets no steps.
+  const ODD = [
+    [undefined, false, [1]], [null, false, [1]], [-1, false, [1]], [0, false, [1]], [NaN, false, [1]], ["x", false, [1]],
+    [true, false, [1]], [[], false, [1]], [{}, false, [1]], [1.5, false, [1]],
+    ["2", false, []], [2.5, true, []], ["3", true, []], [[3], true, []], [Infinity, true, []],
+  ];
+  for (const [v, newer, steps] of ODD){
+    const name = `v: ${typeof v} ${String(v)}`;
+    // Shaped as a version 1 save: settings.dark, and no theme.
+    const saved = { v, settings: { perDay: 15, dark: true } }, newerSave = isNewer(saved);
+    assert.equal(newerSave, newer, `${name}: isNewer`);
+    let s;
+    assert.doesNotThrow(() => { s = migrate(saved); }, `${name}: migrate threw`);
+    assert.equal(s.v, VERSION, name);
+    // UPGRADES[1], the only step, is what removes settings.dark.
+    assert.deepEqual("dark" in s.settings ? [] : [1], steps, `${name}: the upgrade steps run`);
+    if (steps.includes(1)) assert.deepEqual(s.settings, { perDay: 15, kosovo: false, theme: "dark" }, `${name}: theme from dark`);
+    // A newer save may have fields this version doesn't know, so migrate must leave them, dark included.
+    if (newerSave) assert.deepEqual(s.settings, { perDay: 15, kosovo: false, theme: "system", dark: true },
+      `${name}: isNewer says a newer version wrote this save, but migrate upgraded it. A newer save gets no upgrade steps.`);
+    // A save that has a theme keeps it, whatever its version says.
+    assert.equal(migrate({ v, settings: { theme: "dark" } }).settings.theme, "dark", `${name}: a save with a theme lost it`);
   }
   for (const odd of [null, 5, "x", true, [], [1, 2]]){
     for (const field of ["cards", "day", "settings", "confusions"]){
@@ -743,9 +794,12 @@ test("saved progress: a full save from every older version upgrades to this VERS
     + "Found:\n  " + problems.join("\n  "));
 });
 
-// Functions createCore returns that change saved progress. session writes for "Learn 5 more", and its methods
-// that write are listed in core.js (see the Sessions tests).
-const WRITERS = ["touchDay", "introduce", "grade", "session", "setSetting"];
+// Functions createCore returns that change saved progress, each called so that it does (with the arguments from
+// readArgs). session writes for "Learn 5 more"; its methods are checked in "random play keeps every rule".
+const WRITERS = {
+  touchDay: k => k.touchDay(), introduce: (k, { unseen }) => k.introduce(unseen), grade: (k, { codes }) => k.grade(codes[0], 3),
+  session: k => k.session("more"), setSetting: k => k.setSetting("perDay", 20),
+};
 // Every other function createCore returns, each called with realistic arguments: `codes`, flags to ask about, and
 // `run`, an extra practice run (see readArgs).
 const READS = {
@@ -761,12 +815,12 @@ const READS = {
   afterRound: (k, { codes, run }) => k.afterRound(run, new Set(codes)),
   shuffle: (k, { codes }) => k.shuffle(codes),
 };
-// Arguments for READS: the first three flags seen, one not seen yet (if any is left), Kosovo, and an extra practice
-// run two rounds in, as afterRound leaves it.
+// Arguments for READS and WRITERS: the first three flags seen, one not seen yet (if any is left), Kosovo, and an
+// extra practice run two rounds in, as afterRound leaves it.
 function readArgs(t){
   const seenCodes = Object.keys(t.S.cards), unseen = CODES.find(c => !t.S.cards[c]);
   return {
-    codes: [...seenCodes.slice(0, 3), ...(unseen ? [unseen] : []), "xk"],
+    codes: [...seenCodes.slice(0, 3), ...(unseen ? [unseen] : []), "xk"], unseen,
     run: { n: 20, skip: new Set(seenCodes.slice(0, 40)), last: new Set(seenCodes.slice(20, 40)) },
   };
 }
@@ -779,9 +833,9 @@ test("saved progress: read-only functions never change it, with day counters fro
   t.S.confusions = { [`${missed}>fr`]: 2 };
   const args = readArgs(t);
 
-  const unsorted = Object.keys(t.core).filter(f => typeof t.core[f] === "function" && !(f in READS) && !WRITERS.includes(f));
+  const unsorted = Object.keys(t.core).filter(f => typeof t.core[f] === "function" && !(f in READS) && !(f in WRITERS));
   assert.deepEqual(unsorted, [], `createCore returns ${unsorted.join(", ")}, which this test doesn't know about. Add each one `
-    + "to WRITERS if it can change saved progress, or to READS with a realistic call if it can't.");
+    + "to WRITERS with a call that changes saved progress if it can, or to READS with a realistic call if it can't.");
 
   assert.notEqual(t.S.day.n, t.core.dayNum());
   for (const counters of ["left over from an earlier day", "from today"]){
@@ -790,11 +844,25 @@ test("saved progress: read-only functions never change it, with day counters fro
     // Taken before any read is called, so a read that writes shows up below.
     const before = JSON.stringify(t.S);
     for (const [f, call] of Object.entries(READS)){
+      const calls = t.changed;
       call(t.core, args);
       assert.ok(JSON.stringify(t.S) === before, `${f} changed saved progress (with day counters ${counters}), but it's meant `
         + "to only read it: the page's next save would store the change. Make it leave the state alone, or if it's meant "
         + "to write, move it to WRITERS.");
+      assert.equal(t.changed, calls, `${f} called env.changed() (with day counters ${counters}), but it only reads saved `
+        + "progress, so the page saves for nothing. Call changed() in src/core.js only where saved progress is written.");
     }
+  }
+});
+
+test("saved progress: every function that changes it calls env.changed(), so the page saves", () => {
+  for (const [f, call] of Object.entries(WRITERS)){
+    const t = setup({}, seeded(20)); practice(t, 2);
+    const args = readArgs(t), before = JSON.stringify(t.S), calls = t.changed;
+    call(t.core, args);
+    assert.notEqual(JSON.stringify(t.S), before, `WRITERS.${f} in test/core.test.js should call ${f} so that it changes saved progress`);
+    assert.ok(t.changed > calls, `${f} changed saved progress without calling env.changed(), so the page won't save the change `
+      + "and it's lost on reload. In src/core.js, call changed() wherever saved progress is written.");
   }
 });
 

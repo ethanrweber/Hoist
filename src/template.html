@@ -328,12 +328,17 @@ function load(){
   return HoistCore.migrate(saved);
 }
 function save(){ if (outdated) return; try { localStorage.setItem(KEY, JSON.stringify(S)); saveFailed = false; } catch(e){ saveFailed = true; } }
+// core.js calls this when it changes the progress (env.changed in core.js). The save waits until the code running now
+// is done, so it holds the whole change, and changes made together are saved once. It still runs before the next
+// event, so loading what another tab saved (see refresh) can't drop the change first.
+let savePending = false;
+function changed(){ if (savePending) return; savePending = true; queueMicrotask(() => { savePending = false; save(); }); }
 // Skipped while saving fails (private mode, full storage), so progress that exists only in this page isn't dropped.
 function reload(){ if (!saveFailed) S = load(); }
 S = load();
 
 const {BY, dayNum, active, isActive, card, seen, mastered, status, practiced, lookalikes, planToday, session, setSetting, shuffle} =
-  HoistCore.createCore({countries: COUNTRIES, families: FAMILIES, neighbors: NEIGHBORS}, {state: () => S});
+  HoistCore.createCore({countries: COUNTRIES, families: FAMILIES, neighbors: NEIGHBORS}, {state: () => S, changed});
 
 /* ---------- Flags ---------- */
 // Each SVG becomes a blob: URL once, so <img> tags carry a short link instead of the whole file.
@@ -453,7 +458,6 @@ let sess = null;
 let run = null;
 function startSession(mode){
   const s = session(mode, run);
-  if (mode === "more") save();   // it added today's 5 more new flags
   // Nothing to do, say after progress was reset in another tab while this one showed the summary.
   if (!s){ goHome(); return; }
   sess = {core: s, view: null};
@@ -476,7 +480,7 @@ function updateBar(){
 }
 function next(){
   if (!sess) return;
-  if (sess.core.next()) save();   // it introduced a new flag
+  sess.core.next();
   const it = sess.core.current();
   if (!it){ endSession(); return; }
   updateBar();
@@ -578,9 +582,8 @@ function dunno(){
   const r = sess.core.answer({dunno: true}); if (!r) return;
   afterAnswer(sess.core.current().c, r);
 }
-// Saves the answer, then shows the verdict and moves on, or shows the miss screen. typed: the typed answer, if any.
+// Shows the verdict and moves on, or shows the miss screen. typed: the typed answer, if any.
 function afterAnswer(c, r, typed){
-  save();
   if (r.verdict !== "miss"){
     // "hinted": a right pick after "Show choices". Shown as right, but it counts as a miss everywhere else.
     const hinted = r.verdict === "hinted", typo = r.verdict === "typo";
@@ -702,7 +705,7 @@ $("#settingsForm").addEventListener("change", e => {
   if (e.target.name === "perDay") setSetting("perDay", +e.target.value);
   if (e.target.name === "theme"){ setSetting("theme", e.target.value); applyTheme(); }
   if (e.target.id === "kosovo") setSetting("kosovo", e.target.checked);
-  save(); renderHome();
+  renderHome();
 });
 $("#resetBtn").addEventListener("click", e => {
   const b = e.currentTarget;

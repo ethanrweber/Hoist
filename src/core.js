@@ -12,17 +12,25 @@ function blankState(){
 const isObj = x => x !== null && typeof x === "object" && !Array.isArray(x);
 // UPGRADES[k] turns a version-k save into a version k + 1 save. Add a step whenever the saved shape changes.
 const UPGRADES = {
-  // settings.dark (true/false) became settings.theme ("system", "light" or "dark").
-  1: s => { const st = isObj(s.settings) ? s.settings : {}; st.theme = st.dark ? "dark" : "system"; delete st.dark; s.settings = st; },
+  // settings.dark (true/false) became settings.theme ("system", "light" or "dark"). A theme already there is kept,
+  // so the step does no harm to a save that already has the newer shape.
+  1: s => {
+    const st = isObj(s.settings) ? s.settings : {};
+    if (!("theme" in st)) st.theme = st.dark ? "dark" : "system";
+    delete st.dark; s.settings = st;
+  },
 };
+// The version that wrote a save (an object). No version, or one below 1 or not a number, means version 1, the one
+// that had no v. Anything past VERSION is newer, fraction or not. Otherwise a fraction counts as the version below it.
+function savedVersion(saved){ const v = Number(saved.v); return !(v >= 1) ? 1 : v > VERSION ? v : Math.floor(v); }
 // True when the save was written by a newer version of Hoist (open in another tab). Such a save can be
 // shown, but this version must not write over it: it doesn't know the newer fields.
-function isNewer(saved){ return isObj(saved) && saved.v > VERSION; }
-// Turns whatever was in storage into a current-version state, filling in anything missing.
-// A save without a whole-number version from 1 up counts as version 1, the one that had no v.
+function isNewer(saved){ return isObj(saved) && savedVersion(saved) > VERSION; }
+// Turns whatever was in storage into a current-version state, filling in anything missing. A save gets the
+// upgrade steps from its version (see savedVersion) up, so a newer save gets none.
 function migrate(saved){
   if (!isObj(saved)) return blankState();
-  for (let v = Number.isInteger(saved.v) && saved.v >= 1 ? saved.v : 1; v < VERSION; v++) UPGRADES[v](saved);
+  for (let v = savedVersion(saved); v < VERSION; v++) UPGRADES[v](saved);
   const b = blankState();
   return {
     v: VERSION,
@@ -56,13 +64,16 @@ function rng(seed){ return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let 
 
 /*
  * data: {countries, families, neighbors}
- * env:  {state: () => the current state, now?: () => ms (default Date.now), random?: () => [0, 1) (default Math.random)}
+ * env:  {state: () => the current state, now?: () => ms (default Date.now), random?: () => [0, 1) (default Math.random),
+ *        changed?: () => saved progress changed (default: does nothing)}
  * Every function reads env.state() when called, so the page can swap in a freshly loaded state.
- * Functions here change the state but never save it: the caller saves.
+ * Functions here change the state but never save it. Instead, any call that changes it calls env.changed(), meaning
+ * "saved progress changed during this call: save once the call is over". Not right away: the change may not be done
+ * yet (a caller can change what touchDay() returns, say).
  */
 function createCore(data, env){
   const COUNTRIES = data.countries, FAMILIES = data.families, NEIGHBORS = data.neighbors;
-  const state = env.state, now = env.now || Date.now, random = env.random || Math.random;
+  const state = env.state, now = env.now || Date.now, random = env.random || Math.random, changed = env.changed || (() => {});
   const BY = {}; COUNTRIES.forEach(c => BY[c.c] = c);
   const SIB = {}; FAMILIES.forEach(f => f.forEach(c => SIB[c] = f.filter(x => x !== c)));
 
@@ -71,8 +82,8 @@ function createCore(data, env){
   // Today's counters, as a copy, so changing it can't change the state (touchDay gives the stored ones).
   // Counters from an earlier day read as zeros.
   function today(){ const t = dayNum(), d = state().day; return d.n === t ? Object.assign({}, d) : {n: t, newDone: 0, bonus: 0}; }
-  // Today's counters, stored in the state so they can be changed. Call only right before saving.
-  function touchDay(){ const s = state(); s.day = today(); return s.day; }
+  // Today's counters, stored in the state so they can be changed. Calling it counts as a change (see env.changed).
+  function touchDay(){ const s = state(); s.day = today(); changed(); return s.day; }
 
   /* ---------- Flags and their status ---------- */
   function active(){ return COUNTRIES.filter(c => !c.optional || state().settings.kosovo).map(c => c.c); }
@@ -189,6 +200,7 @@ function createCore(data, env){
     const t = dayNum();
     state().cards[c] = {stage: "mc", streak: 0, reps: 0, lapses: 0, S: 0, D: 0, last: t, due: t};
     touchDay().newDone++;
+    changed();
     return true;
   }
   // g: 1 again, 2 hard, 3 good. A flag starts as multiple choice ("mc") and moves to typing ("typed") after
@@ -209,6 +221,7 @@ function createCore(data, env){
     if (k.stage === "mc") ivl = Math.min(ivl, 2);   // recognition alone doesn't earn long gaps
     if (graduated) ivl = Math.min(ivl, 3);           // first typed recall comes soon after graduating
     k.due = t + ivl;
+    changed();
   }
 
   /* ---------- Sessions ---------- */
@@ -270,14 +283,12 @@ function createCore(data, env){
   // One session: its queue, what each answer means, when a missed flag comes back, and the summary.
   // mode: "normal", "more" ("Learn 5 more": 5 more new flags today, then a normal session) or "extra" (run: the
   // extra practice run, see afterRound). Returns null when there's nothing to practice.
-  // What changes saved progress, so the caller saves after it: session("more"), next() when it returns true
-  // (it introduced a new flag), and answer() unless it returns null or verdict "empty" or "ambiguous".
   function session(mode, run){
     if (mode === "more"){ touchDay().bonus += 5; mode = "normal"; }
     const q = mode === "extra" ? buildQueue("extra", run) : buildQueue(mode);
     if (!q.length) return null;
     // i: the item on screen (-1 before the first). view: the question's form once shown. hint: choices were
-    // asked for on a typing question. answered: the question on screen has its answer.
+    // asked for on the question on screen. answered: the question on screen has its answer.
     let i = -1, view = null, hint = false, answered = false;
     const graded = new Set(), tried = new Set(), first = {right: 0, total: 0}, mixups = [];
     const item = () => i >= 0 && i < q.length ? q[i] : null;
@@ -292,18 +303,20 @@ function createCore(data, env){
       if (i >= q.length) return false;
       i++;
       while (i < q.length && q[i].k === "intro" && seen(q[i].c)) i++;
-      view = null; answered = false;
+      view = null; hint = false; answered = false;
       const it = item();
       return !!it && it.k === "intro" && introduce(it.c);
     }
     // How to ask the flag on screen: typing once it has reached that stage, unless choices were asked for
-    // (hint: "Show choices"). Returns {view: "mc", options} or {view: "typed"}, or null if there's nothing to ask.
+    // (hint: "Show choices", which holds until next(): asking again without it can't go back to typing). A flag
+    // still at multiple choice has no "Show choices", so hint does nothing there.
+    // Returns {view: "mc", options} or {view: "typed"}, or null if there's nothing to ask.
     function question({hint: h = false} = {}){
       const it = item();
       if (!it || it.k !== "ask" || answered) return null;
-      const c = it.c, k = card(c);
-      hint = !!h;
-      view = hint || (k ? k.stage : "mc") === "mc" ? "mc" : "typed";
+      const c = it.c, k = card(c), stage = k ? k.stage : "mc";
+      hint = hint || (!!h && stage === "typed");
+      view = hint || stage === "mc" ? "mc" : "typed";
       return view === "mc" ? {view, options: shuffle([c].concat(distractors(c)), random)} : {view};
     }
     // a: {pick: code} for multiple choice, {typed: text} for typing, or {dunno: true} for "I don't know".
@@ -341,7 +354,7 @@ function createCore(data, env){
       if (!tried.has(c)){ tried.add(c); first.total++; if (!missed) first.right++; }
       if (mode !== "extra" && !graded.has(c)){ grade(c, r.g, {keepStage: r.hinted}); graded.add(c); }
       if (r.guess && r.guess !== c){
-        const conf = state().confusions, key = c + ">" + r.guess; conf[key] = (conf[key] || 0) + 1;
+        const conf = state().confusions, key = c + ">" + r.guess; conf[key] = (conf[key] || 0) + 1; changed();
         mixups.push([c, r.guess]);
       }
       // A missed flag comes back a few cards later (sooner after a quick miss), up to 3 asks in all.
@@ -362,6 +375,7 @@ function createCore(data, env){
   function setSetting(name, value){
     if (!Object.keys(blankState().settings).includes(name)) throw new Error(`Unknown setting "${name}"`);
     state().settings[name] = value;
+    changed();
   }
 
   return {BY, dayNum, today, touchDay, active, isActive, card, seen, mastered, status, dueList, practiced, newAllowance,
