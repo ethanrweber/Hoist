@@ -18,7 +18,10 @@ test("build: every country code checks out, and index.html is built from the cur
 /* ---------- Buttons ---------- */
 test("template.html: every data-act button has a branch in the click handler, and every branch has a button", () => {
   const src = read("src/template.html");
-  const start = src.indexOf('document.addEventListener("click"'), end = src.indexOf("\n});", start);
+  // The handler ends at the first "});" indented as deep as the line it starts on.
+  const start = src.indexOf('document.addEventListener("click"');
+  const indent = src.slice(src.lastIndexOf("\n", start) + 1, start);
+  const end = src.indexOf("\n" + indent + "});", start);
   assert.ok(start >= 0 && end > start, 'Can\'t find the click handler, document.addEventListener("click", ...), in src/template.html');
   const branches = new Set([...src.slice(start, end).matchAll(/\ba === "([^"]*)"/g)].map(m => m[1]));
   // data-act on <button> tags only, in the markup and in the script's template strings. A selector like

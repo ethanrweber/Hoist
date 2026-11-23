@@ -1,0 +1,4 @@
+# Built from src/ by npm run build.
+index.html
+package-lock.json
+src/flags/
