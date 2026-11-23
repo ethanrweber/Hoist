@@ -1,29 +1,64 @@
-// Tests for src/core.js. Run with: npm test
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("fs");
-const path = require("path");
-const vm = require("vm");
-const { COUNTRIES, FAMILIES } = require("../src/countries.js");
-const NEIGHBORS = require("../src/neighbors.json");
-const HoistCore = require("../src/core.js");
+// Tests for src/core.ts. Run with: npm test
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import { SourceMap, type SourceMapPayload } from "node:module";
+import path from "node:path";
+import vm from "node:vm";
+import { transformSync } from "esbuild";
+import { COUNTRIES, FAMILIES } from "../src/countries.ts";
+import NEIGHBORS from "../src/neighbors.json" with { type: "json" };
+import * as HoistCore from "../src/core.ts";
+import type {
+  AnswerResult,
+  AskItem,
+  Card,
+  Code,
+  Grade,
+  Question,
+  Run,
+  Session,
+  SessionItem,
+  Settings,
+  Stage,
+  State,
+  Verdict,
+} from "../src/core.ts";
 const { blankState, isNewer, migrate, VERSION, fsrs, retr, ivlFor, W } = HoistCore;
 
+// What src/core.ts exports.
+type CoreModule = typeof HoistCore;
 const DAY = 864e5;
 // A core over fresh progress, with a clock the test moves forward and fixed randomness (or `random`).
 // t.changed counts the core's calls to env.changed(), which tell the page to save.
-// `Core` is what src/core.js exports: the one Node loaded, unless a test loads its own (see sandboxedCore).
-function setup(settings, random = () => 0.5, Core = HoistCore) {
+// `Core` is what src/core.ts exports: the one Node loaded, unless a test loads its own (see sandboxedCore).
+interface Setup {
+  S: State;
+  now: number;
+  changed: number;
+  core: HoistCore.Core;
+  nextDay: () => void;
+}
+function setup(
+  settings: Partial<Settings> = {},
+  random = () => 0.5,
+  Core: CoreModule = HoistCore,
+): Setup {
   const t = { S: Core.blankState(), now: Date.UTC(2026, 0, 15, 12), changed: 0 };
   Object.assign(t.S.settings, settings);
-  t.core = Core.createCore(
+  const core = Core.createCore(
     { countries: COUNTRIES, families: FAMILIES, neighbors: NEIGHBORS },
     { state: () => t.S, now: () => t.now, random, changed: () => t.changed++ },
   );
-  t.nextDay = () => {
+  const nextDay = () => {
     t.now += DAY;
   };
-  return t;
+  return Object.assign(t, { core, nextDay });
+}
+// x, which the test needs to be there: fails the test if it's null or undefined.
+function must<T>(x: T | null | undefined, what: string): T {
+  assert.ok(x != null, `There should be ${what}`);
+  return x;
 }
 
 /* ---------- Answer checking ---------- */
@@ -70,16 +105,18 @@ test("answer checking: a typo as close to another country as to the right one as
 
 test("answer checking: a one-letter slip of the right name is never blamed on another country", () => {
   const { judge } = setup().core;
-  const blamed = [];
+  const blamed: string[] = [];
   for (const c of COUNTRIES) {
     if (c.optional) continue;
     const n = c.n.toLowerCase(),
-      slips = new Set();
+      slips = new Set<string>();
     for (let i = 0; i < n.length; i++) slips.add(n.slice(0, i) + n.slice(i + 1)); // dropped letter
     for (let i = 0; i < n.length - 1; i++)
       slips.add(n.slice(0, i) + n[i + 1] + n[i] + n.slice(i + 2)); // swapped letters
-    for (const s of slips)
-      if (s !== n && judge(s, c.c).guess) blamed.push(`${s} (${c.c} -> ${judge(s, c.c).guess})`);
+    for (const s of slips) {
+      const j = judge(s, c.c);
+      if (s !== n && "guess" in j && j.guess) blamed.push(`${s} (${c.c} -> ${j.guess})`);
+    }
   }
   assert.deepEqual(blamed, []);
 });
@@ -94,13 +131,13 @@ test("stages: two right multiple-choice answers move a flag to typing; a typing 
   const t = setup(),
     { grade, card } = t.core;
   grade("fr", 3);
-  assert.equal(card("fr").stage, "mc");
+  assert.equal(card("fr")?.stage, "mc");
   t.nextDay();
   grade("fr", 3);
-  assert.equal(card("fr").stage, "typed");
+  assert.equal(card("fr")?.stage, "typed");
   t.nextDay();
   grade("fr", 1);
-  assert.equal(card("fr").stage, "mc");
+  assert.equal(card("fr")?.stage, "mc");
 });
 
 test("stages: a right pick after Show choices is a miss that keeps the flag at typing", () => {
@@ -113,10 +150,11 @@ test("stages: a right pick after Show choices is a miss that keeps the flag at t
     t.nextDay();
     grade("fr", 3);
   }
-  const before = card("fr").S;
+  const before = card("fr")?.S ?? 0;
   t.nextDay();
   grade("fr", 1, { keepStage: true });
   const k = card("fr");
+  assert.ok(k, "fr should have a card");
   assert.equal(k.stage, "typed");
   assert.equal(k.streak, 0);
   assert.ok(k.S < before, "stability should drop like any miss");
@@ -179,11 +217,11 @@ test("today's numbers: reading them never changes saved progress", () => {
 
 /* ---------- Extra practice ---------- */
 // Repeatable randomness, for tests where the picks need to vary.
-function seeded(s) {
+function seeded(s: number) {
   return () => (s = (s * 16807) % 2147483647) / 2147483647;
 }
 // Plays `days` of normal sessions, answering everything right.
-function practice(t, days) {
+function practice(t: Setup, days: number) {
   for (let d = 0; d < days; d++) {
     for (const it of t.core.buildQueue("normal")) if (it.k === "ask") t.core.grade(it.c, 3);
     t.nextDay();
@@ -236,7 +274,7 @@ test("extra practice: with more than 20 flags missed today, rounds take turns am
 
 const CODES = COUNTRIES.filter((c) => !c.optional).map((c) => c.c);
 // Marks `codes` as practiced, all last answered two days ago with stability S.
-function learn(t, codes, S = 5) {
+function learn(t: Setup, codes: Code[], S = 5) {
   const d = t.core.dayNum();
   codes.forEach(
     (c) =>
@@ -253,10 +291,10 @@ function learn(t, codes, S = 5) {
   );
 }
 // Plays `rounds` rounds of one extra practice run, answering every flag. Returns each round's flags.
-const newRun = (n) => ({ n, skip: new Set(), last: new Set() });
-function playRun(t, n, rounds) {
+const newRun = (n: number): Run => ({ n, skip: new Set(), last: new Set() });
+function playRun(t: Setup, n: number, rounds: number) {
   let run = newRun(n);
-  const out = [];
+  const out: Code[][] = [];
   for (let i = 0; i < rounds; i++) {
     const q = t.core.buildQueue("extra", run).map((it) => it.c);
     out.push(q);
@@ -271,10 +309,10 @@ test("extra practice: weak flags come up more often, but strong ones still get a
     strong = CODES.slice(30, 60);
   learn(t, weak, 2);
   learn(t, strong, 60);
-  const n = {};
+  const n: Record<Code, number> = {};
   for (let i = 0; i < 300; i++)
     t.core.buildQueue("extra").forEach((it) => (n[it.c] = (n[it.c] || 0) + 1));
-  const avg = (list) => list.reduce((s, c) => s + (n[c] || 0), 0) / list.length;
+  const avg = (list: Code[]) => list.reduce((s, c) => s + (n[c] || 0), 0) / list.length;
   assert.ok(avg(weak) > 3 * avg(strong), `weak ${avg(weak)} vs strong ${avg(strong)} times each`);
   assert.ok(
     strong.some((c) => n[c]),
@@ -368,22 +406,32 @@ test("extra practice: flags missed today lead a new run, but Another rounds don'
 /* ---------- Sessions ---------- */
 // Each country's name, for typed answers.
 const NAME = Object.fromEntries(COUNTRIES.map((c) => [c.c, c.n]));
-const oneOf = (rand, list) => list[Math.floor(rand() * list.length)];
+const oneOf = <T>(rand: () => number, list: readonly T[]) => list[Math.floor(rand() * list.length)];
 // Makes `codes` due today at `stage`. With perDay 0 there's nothing new, so a session asks just these.
-function dueToday(t, codes, stage = "mc") {
+function dueToday(t: Setup, codes: Code[], stage: Stage = "mc") {
   const d = t.core.dayNum();
   codes.forEach(
     (c) =>
       (t.S.cards[c] = { stage, streak: 0, reps: 3, lapses: 0, S: 5, D: 5, last: d - 2, due: d }),
   );
 }
+// The options of `q`, which must be a multiple-choice question.
+function optionsOf(q: Question | null) {
+  assert.ok(q && q.view === "mc", "There should be a multiple-choice question");
+  return q.options;
+}
 // A wrong choice among the options.
-const wrongPick = (q, c) => q.options.find((o) => o !== c);
+const wrongPick = (q: Question | null, c: Code) =>
+  must(
+    optionsOf(q).find((o) => o !== c),
+    "a wrong choice",
+  );
 // Plays session `s` to its end, answering each question with `answer(it, question)`. Returns the items shown.
-function playAll(s, answer) {
-  const shown = [];
-  for (s.next(); s.current(); s.next()) {
+function playAll(s: Session, answer: (it: AskItem, q: Question | null) => unknown) {
+  const shown: SessionItem[] = [];
+  for (s.next(); ; s.next()) {
     const it = s.current();
+    if (!it) break;
     shown.push(it);
     if (it.k === "ask") answer(it, s.question());
   }
@@ -391,7 +439,7 @@ function playAll(s, answer) {
 }
 // Typed answers a player might give for flag c: right, a letter dropped, another country, no country, blank,
 // and one as close to two countries (ambiguous for the flags listed, a wrong guess for the rest).
-const AMBIGUOUS = {
+const AMBIGUOUS: Record<Code, string> = {
   au: "Austrlia",
   at: "Austrlia",
   ne: "Nigeri",
@@ -405,7 +453,7 @@ const AMBIGUOUS = {
   na: "Nambia",
   rs: "Seria",
 };
-function typedAnswer(c, rand) {
+function typedAnswer(c: Code, rand: () => number) {
   const n = NAME[c],
     i = Math.floor(rand() * n.length);
   return oneOf(rand, [
@@ -420,11 +468,12 @@ function typedAnswer(c, rand) {
 // Answers the question on screen the way a player might, at random: right and wrong picks, any typedAnswer,
 // "Show choices" and "I don't know". Like the page, it shows choices after a blank and asks again after an
 // ambiguous answer. Returns each result, the answer last.
-function answerRandomly(s, it, q, rand) {
-  const out = [];
-  if (q.view === "typed" && rand() < 0.15) q = s.question({ hint: true });
+function answerRandomly(s: Session, it: AskItem, q: Question | null, rand: () => number) {
+  const out: AnswerResult[] = [];
+  if (q?.view === "typed" && rand() < 0.15) q = s.question({ hint: true });
   for (;;) {
-    let r;
+    assert.ok(q, "There should be a question to answer");
+    let r: AnswerResult | null;
     if (q.view === "mc")
       r = s.answer({ pick: rand() < 0.7 ? it.c : oneOf(rand, q.options) }, { ms: rand() * 9000 });
     else if (rand() < 0.1) r = s.answer({ dunno: true });
@@ -433,6 +482,7 @@ function answerRandomly(s, it, q, rand) {
         { typed: typedAnswer(it.c, rand) },
         { ms: rand() * 15000, firstKeyMs: rand() < 0.2 ? null : rand() * 4000 },
       );
+    assert.ok(r, "The question should take an answer");
     out.push(r);
     if (r.verdict === "empty") q = s.question({ hint: true });
     else if (r.verdict !== "ambiguous") return out;
@@ -440,16 +490,16 @@ function answerRandomly(s, it, q, rand) {
 }
 
 // Answers the one question of a session about Argentina, due today at `stage`, with `act(s, question)`.
-function answerOne(stage, act) {
+function answerOne<R>(stage: Stage, act: (s: Session, q: Question | null) => R) {
   const t = setup({ perDay: 0 });
   dueToday(t, ["ar"], stage);
-  const s = t.core.session("normal");
+  const s = must(t.core.session("normal"), "a session");
   s.next();
   const r = act(s, s.question());
   return { r, card: t.S.cards.ar };
 }
 // The card Argentina would have after grading it g directly.
-function gradedAs(stage, g, opts) {
+function gradedAs(stage: Stage, g: Grade, opts?: { keepStage?: boolean }) {
   const t = setup({ perDay: 0 });
   dueToday(t, ["ar"], stage);
   t.core.grade("ar", g, opts);
@@ -457,20 +507,28 @@ function gradedAs(stage, g, opts) {
 }
 
 test("sessions: picks and typed answers are graded by time, typos and Show choices, on each side of every cutoff", () => {
-  const pick = (o, ms) => (s, q) =>
-    s.answer({ pick: o === "wrong" ? wrongPick(q, "ar") : o }, { ms });
-  const hintedPick = (o, ms) => (s) => pick(o, ms)(s, s.question({ hint: true }));
+  type Act = (s: Session, q: Question | null) => AnswerResult | null;
+  const pick =
+    (o: Code, ms: number): Act =>
+    (s, q) =>
+      s.answer({ pick: o === "wrong" ? wrongPick(q, "ar") : o }, { ms });
+  const hintedPick =
+    (o: Code, ms: number): Act =>
+    (s) =>
+      pick(o, ms)(s, s.question({ hint: true }));
   // Show choices, then the question asked again without it: the choices stay until the next card.
-  const askedAgain = (o, ms) => (s) => {
-    s.question({ hint: true });
-    return pick(o, ms)(s, s.question());
-  };
+  const askedAgain =
+    (o: Code, ms: number): Act =>
+    (s) => {
+      s.question({ hint: true });
+      return pick(o, ms)(s, s.question());
+    };
   const typed =
-    (text, ms, firstKeyMs = 500) =>
+    (text: string, ms: number, firstKeyMs: number | null = 500): Act =>
     (s) =>
       s.answer({ typed: text }, { ms, firstKeyMs });
   // [stage, answer, verdict, quick, grade, keepStage]. A wrong pick's guess is the choice picked.
-  const cases = [
+  const cases: [Stage, Act, Verdict, boolean, Grade, boolean?][] = [
     ["mc", pick("ar", 6000), "right", false, 3],
     ["mc", pick("ar", 6001), "right", false, 2],
     ["mc", pick("wrong", 2199), "miss", true, 1],
@@ -493,11 +551,11 @@ test("sessions: picks and typed answers are graded by time, typos and Show choic
     const { r, card } = answerOne(stage, act),
       name = `case ${i} (${verdict})`;
     assert.equal(r && r.verdict, verdict, name);
-    assert.equal(r.quick, quick, name);
+    assert.equal(r?.quick, quick, name);
     assert.deepEqual(card, gradedAs(stage, g, { keepStage }), `${name} should grade ${g}`);
   }
-  assert.equal(answerOne("typed", typed("Brazil", 3000)).r.guess, "br");
-  assert.equal(answerOne("typed", typed("zzzz", 3000)).r.guess, null);
+  assert.equal(answerOne("typed", typed("Brazil", 3000)).r?.guess, "br");
+  assert.equal(answerOne("typed", typed("zzzz", 3000)).r?.guess, null);
   // After Show choices, the question is multiple choice until the next card, so a typed answer isn't one.
   answerOne("typed", (s) => {
     s.question({ hint: true });
@@ -515,7 +573,7 @@ test("sessions: picks and typed answers are graded by time, typos and Show choic
   ]) {
     const t = setup({ perDay: 0 });
     dueToday(t, [code], "typed");
-    const s = t.core.session("normal");
+    const s = must(t.core.session("normal"), "a session");
     s.next();
     s.question();
     const before = JSON.stringify(t.S);
@@ -525,16 +583,16 @@ test("sessions: picks and typed answers are graded by time, typos and Show choic
       quick: false,
     });
     assert.equal(JSON.stringify(t.S), before);
-    assert.equal(s.answer({ typed: NAME[code] }, { ms: 1000 }).verdict, "right");
+    assert.equal(s.answer({ typed: NAME[code] }, { ms: 1000 })?.verdict, "right");
   }
 });
 
 test("sessions: a missed flag comes back 3 cards later after a quick miss, 5 otherwise, and is asked at most 3 times", () => {
   const t = setup({ perDay: 0 });
   dueToday(t, CODES.slice(0, 12));
-  const s = t.core.session("normal"),
-    asked = [];
-  let target = null;
+  const s = must(t.core.session("normal"), "a session"),
+    asked: number[][] = [];
+  let target: Code | null = null;
   // Misses one flag every time it's asked: quickly, then slowly, then quickly again. Answers the rest right.
   playAll(s, (it, q) => {
     target = target || it.c;
@@ -550,7 +608,7 @@ test("sessions: a missed flag comes back 3 cards later after a quick miss, 5 oth
   // Near the end of the queue, it comes back as the next card.
   const t2 = setup({ perDay: 0 });
   dueToday(t2, ["ar"]);
-  const s2 = t2.core.session("normal");
+  const s2 = must(t2.core.session("normal"), "a session");
   assert.deepEqual(
     playAll(s2, (it, q) => s2.answer({ pick: wrongPick(q, it.c) }, { ms: 3000 })),
     [1, 2, 3].map((n) => ({ k: "ask", c: "ar", n })),
@@ -562,7 +620,7 @@ test("sessions: a normal session grades each flag once, even when it's asked aga
   const t = setup({ perDay: 0 });
   dueToday(t, codes);
   // Misses each flag at first, then gets it right.
-  const s = t.core.session("normal");
+  const s = must(t.core.session("normal"), "a session");
   const shown = playAll(s, (it, q) =>
     s.answer({ pick: it.n === 1 ? wrongPick(q, it.c) : it.c }, { ms: 3000 }),
   );
@@ -574,14 +632,14 @@ test("sessions: extra practice never changes cards, but records mix-ups", () => 
   const t = setup({}, seeded(14));
   learn(t, CODES.slice(0, 40));
   const cards = JSON.stringify(t.S.cards),
-    s = t.core.session("extra", newRun(20)),
-    wrong = [];
+    s = must(t.core.session("extra", newRun(20)), "a session"),
+    wrong: string[] = [];
   playAll(s, (it, q) => {
     const r = s.answer(
       { typed: it.n > 1 ? NAME[it.c] : it.c === "fr" ? NAME.de : NAME.fr },
       { ms: 3000 },
     );
-    if (r.guess) wrong.push(`${it.c}>${r.guess}`);
+    if (r?.guess) wrong.push(`${it.c}>${r.guess}`);
   });
   assert.equal(wrong.length, 20);
   assert.equal(JSON.stringify(t.S.cards), cards);
@@ -591,12 +649,10 @@ test("sessions: extra practice never changes cards, but records mix-ups", () => 
 test("sessions: a right pick after Show choices counts as a miss, comes back, and the flag stays at typing", () => {
   const t = setup({ perDay: 0 });
   dueToday(t, ["ar"], "typed");
-  const s = t.core.session("normal");
+  const s = must(t.core.session("normal"), "a session");
   s.next();
   assert.deepEqual(s.question(), { view: "typed" });
-  const q = s.question({ hint: true });
-  assert.equal(q.view, "mc");
-  assert.ok(q.options.includes("ar"));
+  assert.ok(optionsOf(s.question({ hint: true })).includes("ar"));
   assert.deepEqual(s.answer({ pick: "ar" }, { ms: 1000 }), {
     verdict: "hinted",
     guess: null,
@@ -612,7 +668,7 @@ test("sessions: a right pick after Show choices counts as a miss, comes back, an
 
 test("sessions: reaching a new flag introduces it, and its intro is skipped if another tab introduced it first", () => {
   const t = setup(),
-    s = t.core.session("normal");
+    s = must(t.core.session("normal"), "a session");
   const [a, b, ...rest] = t.core.planToday().groups.flat();
   assert.equal(s.next(), true);
   assert.deepEqual(s.current(), { k: "intro", c: a });
@@ -620,7 +676,9 @@ test("sessions: reaching a new flag introduces it, and its intro is skipped if a
   // Another tab introduces b, the next new flag, and this page loads what it saved.
   t.S = structuredClone(t.S);
   t.core.introduce(b);
-  const shown = [s.current()].concat(playAll(s, (it) => s.answer({ dunno: true })));
+  const shown = [must(s.current(), "a flag on screen")].concat(
+    playAll(s, (it) => s.answer({ dunno: true })),
+  );
   const intros = shown.filter((it) => it.k === "intro").map((it) => it.c);
   assert.deepEqual(intros, [a, ...rest]);
   assert.ok(
@@ -632,7 +690,7 @@ test("sessions: reaching a new flag introduces it, and its intro is skipped if a
 test("sessions: once a question has its answer, more answers, Show choices and I don't know are ignored", () => {
   const t = setup({ perDay: 0 });
   dueToday(t, ["ar"], "typed");
-  const s = t.core.session("normal");
+  const s = must(t.core.session("normal"), "a session");
   s.next();
   assert.equal(
     s.answer({ typed: "Argentina" }, { ms: 1000 }),
@@ -641,7 +699,7 @@ test("sessions: once a question has its answer, more answers, Show choices and I
   );
   s.question();
   assert.equal(s.answer({ pick: "ar" }, { ms: 1000 }), null, "a pick on a typing question");
-  assert.equal(s.answer({ typed: "Brazil" }, { ms: 3000, firstKeyMs: 1000 }).verdict, "miss");
+  assert.equal(s.answer({ typed: "Brazil" }, { ms: 3000, firstKeyMs: 1000 })?.verdict, "miss");
   const after = JSON.stringify(t.S);
   assert.equal(s.answer({ typed: "Argentina" }, { ms: 1000 }), null);
   assert.equal(s.answer({ dunno: true }), null);
@@ -653,10 +711,10 @@ test("sessions: once a question has its answer, more answers, Show choices and I
 
 test("sessions: Learn 5 more adds 5 new flags to today, and the session brings them in", () => {
   const t = setup({ perDay: 5 }),
-    first = t.core.session("normal");
+    first = must(t.core.session("normal"), "a session");
   playAll(first, (it) => first.answer({ pick: it.c }, { ms: 1000 }));
   assert.equal(t.core.newAllowance(), 0);
-  const s = t.core.session("more");
+  const s = must(t.core.session("more"), "a session");
   assert.equal(s.mode, "normal");
   assert.equal(t.core.today().bonus, 5);
   assert.equal(t.core.newAllowance(), 5);
@@ -672,9 +730,9 @@ test("sessions: the summary counts first answers, and lists each mix-up once, in
   // In extra practice, so a miss leaves the flag at typing.
   const t = setup();
   learn(t, CODES.slice(0, 5));
-  const s = t.core.session("extra", newRun(20)),
+  const s = must(t.core.session("extra", newRun(20)), "a session"),
     [x, y] = CODES.slice(10, 12),
-    order = [];
+    order: Code[] = [];
   // The first flag asked is taken for x at its first two asks, the second for y at its first. All else is right.
   playAll(s, (it) => {
     if (!order.includes(it.c)) order.push(it.c);
@@ -698,7 +756,7 @@ test("sessions: the summary counts first answers, and lists each mix-up once, in
 test("sessions: starting a normal or extra session, and every session read, leave saved progress alone", () => {
   const t = setup({}, seeded(15));
   practice(t, 3);
-  const same = (what, f) => {
+  const same = <T>(what: string, f: () => T) => {
     const before = JSON.stringify(t.S),
       calls = t.changed,
       out = f();
@@ -707,7 +765,10 @@ test("sessions: starting a normal or extra session, and every session read, leav
     return out;
   };
   same('session("extra")', () => t.core.session("extra", newRun(20)));
-  const s = same('session("normal")', () => t.core.session("normal")),
+  const s = must(
+      same('session("normal")', () => t.core.session("normal")),
+      "a session",
+    ),
     rand = seeded(16);
   for (;;) {
     const before = JSON.stringify(t.S),
@@ -738,10 +799,10 @@ test("sessions: starting a normal or extra session, and every session read, leav
 test("sessions: a miss in extra practice doesn't set missedOn, so it doesn't lead the next run", () => {
   const t = setup({}, seeded(17));
   learn(t, CODES.slice(0, 60));
-  const s = t.core.session("extra", newRun(20));
+  const s = must(t.core.session("extra", newRun(20)), "a session");
   s.next();
   s.question();
-  const c = s.current().c;
+  const c = must(s.current(), "a flag on screen").c;
   s.answer({ dunno: true });
   assert.equal(t.S.cards[c].missedOn, undefined);
   const inRuns = Array.from({ length: 10 }, () =>
@@ -755,13 +816,13 @@ test("sessions: a miss in extra practice doesn't set missedOn, so it doesn't lea
 test("sessions: random play keeps every rule", () => {
   const rand = seeded(18),
     t = setup({}, seeded(19)),
-    verdicts = new Set();
+    verdicts = new Set<Verdict>();
   // Calls f, and fails if it changed saved progress without calling env.changed(). The state as JSON is kept from
   // the last call that didn't call changed(), and reused while the state and the count of changed() calls stay the same.
-  let last = {};
+  let last: { S?: State; calls?: number; json?: string } = {};
   const told =
-    (what, f) =>
-    (...args) => {
+    <A extends unknown[], R>(what: string, f: (...args: A) => R) =>
+    (...args: A) => {
       const calls = t.changed,
         before = last.S === t.S && last.calls === calls ? last.json : JSON.stringify(t.S),
         out = f(...args);
@@ -773,31 +834,36 @@ test("sessions: random play keeps every rule", () => {
       assert.ok(
         json === before,
         `${what} changed saved progress without calling env.changed(), so the page won't save the ` +
-          "change and it's lost on reload. In src/core.js, call changed() wherever saved progress is written.",
+          "change and it's lost on reload. In src/core.ts, call changed() wherever saved progress is written.",
       );
       last = { S: t.S, calls, json };
       return out;
     };
   // The session with each method checked by told().
-  const watched = (s) =>
-    s &&
-    Object.fromEntries(
-      Object.entries(s).map(([k, f]) => [k, typeof f === "function" ? told(k + "()", f) : f]),
-    );
-  let run = null,
+  const watched = (s: Session | null): Session | null =>
+    s && {
+      mode: s.mode,
+      current: told("current()", s.current),
+      progress: told("progress()", s.progress),
+      next: told("next()", s.next),
+      question: told("question()", s.question),
+      answer: told("answer()", s.answer),
+      end: told("end()", s.end),
+    };
+  let run: Run | undefined,
     sessions = 0;
   for (let n = 0; n < 30; n++) {
     if (rand() < 0.5) t.nextDay();
-    const mode = oneOf(rand, ["normal", "normal", "more", "extra"]);
+    const mode = oneOf(rand, ["normal", "normal", "more", "extra"] as const);
     if (mode === "extra" && (!run || rand() < 0.5)) run = newRun(oneOf(rand, [20, 50, Infinity]));
     const s = watched(told(`session("${mode}")`, t.core.session)(mode, run));
     if (!s) continue;
     sessions++;
     const upcoming = t.core.planToday().groups.flat(),
       cards = mode === "extra" && JSON.stringify(t.S.cards);
-    const elsewhere = new Set(),
-      asks = {},
-      grades = {};
+    const elsewhere = new Set<Code>(),
+      asks: Record<Code, number> = {},
+      grades: Record<Code, number> = {};
     for (let steps = 0; ; steps++) {
       assert.ok(steps < 2000, "the session never ended");
       if (rand() < 0.02) break; // ended early
@@ -823,9 +889,9 @@ test("sessions: random play keeps every rule", () => {
         asks[it.c] <= 3 && it.n === asks[it.c],
         `${it.c} asked ${asks[it.c]} times, as attempt ${it.n}`,
       );
-      const reps = t.core.card(it.c).reps;
+      const reps = t.core.card(it.c)?.reps ?? 0;
       answerRandomly(s, it, s.question(), rand).forEach((r) => verdicts.add(r.verdict));
-      grades[it.c] = (grades[it.c] || 0) + t.core.card(it.c).reps - reps;
+      grades[it.c] = (grades[it.c] || 0) + (t.core.card(it.c)?.reps ?? 0) - reps;
       if (rand() < 0.2) {
         assert.equal(s.answer({ pick: it.c }, { ms: 1000 }), null);
         assert.equal(s.answer({ typed: NAME[it.c] }, { ms: 1000 }), null);
@@ -837,7 +903,7 @@ test("sessions: random play keeps every rule", () => {
     if (mode === "extra") {
       assert.equal(JSON.stringify(t.S.cards), cards, "extra practice changed a card");
       assert.deepEqual(
-        [...end.run.last].sort(),
+        [...must(end.run, "the run after the round").last].sort(),
         Object.keys(asks).sort(),
         "the run should use up the flags answered, and only those",
       );
@@ -879,8 +945,10 @@ test("saved progress: setSetting changes only settings a fresh save has", () => 
   t.core.setSetting("theme", "light");
   t.core.setSetting("kosovo", true);
   assert.deepEqual(t.S.settings, { perDay: 20, theme: "light", kosovo: true });
+  // Called the way untyped code could: TypeScript accepts only the names Settings has.
+  const setAny = t.core.setSetting as (name: string, value: unknown) => void;
   for (const name of ["dark", "toString", "__proto__"])
-    assert.throws(() => t.core.setSetting(name, true), /Unknown setting/, name);
+    assert.throws(() => setAny(name, true), /Unknown setting/, name);
   assert.deepEqual(t.S.settings, { perDay: 20, theme: "light", kosovo: true });
 });
 
@@ -900,7 +968,7 @@ test("saved progress: odd versions and odd field types never stop the upgrade, a
   );
   // [v, isNewer, the UPGRADES steps migrate runs]. No version, or one below 1 or not a number, is version 1; a fraction
   // counts as the version below it; anything past VERSION is newer, and gets no steps.
-  const ODD = [
+  const ODD: [unknown, boolean, number[]][] = [
     [undefined, false, [1]],
     [null, false, [1]],
     [-1, false, [1]],
@@ -923,10 +991,11 @@ test("saved progress: odd versions and odd field types never stop the upgrade, a
     const saved = { v, settings: { perDay: 15, dark: true } },
       newerSave = isNewer(saved);
     assert.equal(newerSave, newer, `${name}: isNewer`);
-    let s;
+    let s: State | undefined;
     assert.doesNotThrow(() => {
       s = migrate(saved);
     }, `${name}: migrate threw`);
+    assert.ok(s);
     assert.equal(s.v, VERSION, name);
     // UPGRADES[1], the only step, is what removes settings.dark.
     assert.deepEqual("dark" in s.settings ? [] : [1], steps, `${name}: the upgrade steps run`);
@@ -965,7 +1034,8 @@ test("saved progress: odd versions and odd field types never stop the upgrade, a
 
 // What a save holds at each VERSION: the keys at the top level, in day and settings, and across all cards.
 // A "?" marks a key only some saves have. Earlier versions stay on record, to check SAVES below.
-const SAVED_SHAPE = {
+type Shape = Record<"top" | "day" | "settings" | "cards", string[]>;
+const SAVED_SHAPE: Record<number, Shape> = {
   1: {
     top: ["cards", "confusions", "day", "settings", "v"],
     day: ["bonus", "n", "newDone"],
@@ -980,9 +1050,17 @@ const SAVED_SHAPE = {
     cards: ["D", "S", "due", "lapses", "last", "missedOn?", "reps", "stage", "streak"],
   },
 };
+// A save as some version wrote it.
+interface AnySave {
+  v: number;
+  cards: Record<Code, object>;
+  day: object;
+  settings: object;
+  confusions: object;
+}
 // A full save from each version, as that version wrote it, with a card holding every key cards had then. Add one
 // along with each SAVED_SHAPE and keep them all: the upgrade test below checks that UPGRADES carries each one over.
-const SAVES = {
+const SAVES: Record<number, AnySave> = {
   1: {
     v: 1,
     cards: {
@@ -1042,8 +1120,8 @@ const SAVES = {
   },
 };
 // A state's keys, in the form of SAVED_SHAPE.
-function shapeOf(S) {
-  const keys = (o) => Object.keys(o).sort();
+function shapeOf(S: AnySave): Shape {
+  const keys = (o: object) => Object.keys(o).sort();
   return {
     top: keys(S),
     day: keys(S.day),
@@ -1052,23 +1130,27 @@ function shapeOf(S) {
   };
 }
 // A SAVED_SHAPE entry with every key, "?" or not: the shape of a save that has them all.
-const everyKey = (shape) =>
+const everyKey = (shape: Shape | undefined) =>
   shape &&
   Object.fromEntries(
     Object.entries(shape).map(([part, keys]) => [part, keys.map((k) => k.replace(/\?$/, ""))]),
   );
 // How a state differs from SAVED_SHAPE[v]: keys it has that the entry doesn't list (left over from an older
 // version, say), and keys it lacks that aren't marked "?". Each card is compared on its own.
-function shapeProblems(S, v) {
+function shapeProblems(S: State, v: number) {
   const want = SAVED_SHAPE[v];
   const { top, day, settings } = shapeOf(S);
-  const parts = [
+  const parts: [string, string[], string[]][] = [
     ["the top level", top, want.top],
     ["day", day, want.day],
     ["settings", settings, want.settings],
-    ...Object.entries(S.cards).map(([c, card]) => [`card "${c}"`, Object.keys(card), want.cards]),
+    ...Object.entries(S.cards).map(([c, card]): [string, string[], string[]] => [
+      `card "${c}"`,
+      Object.keys(card),
+      want.cards,
+    ]),
   ];
-  const out = [];
+  const out: string[] = [];
   for (const [part, has, listed] of parts) {
     const all = listed.map((k) => k.replace(/\?$/, ""));
     for (const k of has)
@@ -1082,13 +1164,12 @@ function shapeProblems(S, v) {
 // Plays through everything that writes saved progress, the way the page does, with Kosovo on: 10 days of sessions
 // with random answers of every kind (see answerRandomly), "Learn 5 more", two rounds of extra practice a day, and
 // each setting. Returns the setup, with the verdicts it got in t.verdicts.
-function playThrough(Core) {
-  const t = setup({}, seeded(11), Core),
+function playThrough(Core?: CoreModule) {
+  const t = Object.assign(setup({}, seeded(11), Core), { verdicts: new Set<Verdict>() }),
     rand = seeded(12);
-  t.verdicts = new Set();
   t.core.setSetting("kosovo", true);
   t.core.setSetting("theme", "dark");
-  const play = (s) => {
+  const play = (s: Session | null) => {
     if (!s) return null;
     playAll(s, (it, q) => answerRandomly(s, it, q, rand).forEach((r) => t.verdicts.add(r.verdict)));
     return s.end();
@@ -1104,7 +1185,7 @@ function playThrough(Core) {
 }
 
 test("saved progress: what gets saved matches the snapshot for this VERSION", () => {
-  const saved = JSON.parse(JSON.stringify(playThrough().S));
+  const saved: State = JSON.parse(JSON.stringify(playThrough().S));
   // The page adds a key for each pair of flags mixed up, so only its type is checked.
   assert.ok(
     saved.confusions && typeof saved.confusions === "object" && !Array.isArray(saved.confusions),
@@ -1115,8 +1196,8 @@ test("saved progress: what gets saved matches the snapshot for this VERSION", ()
   assert.deepEqual(
     shape,
     everyKey(SAVED_SHAPE[VERSION]),
-    `What gets saved doesn't match SAVED_SHAPE[${VERSION}] in test/core.test.js, ` +
-      "or there is none. When what gets saved changes, raise VERSION in src/core.js, add an UPGRADES step there that " +
+    `What gets saved doesn't match SAVED_SHAPE[${VERSION}] in test/core.test.ts, ` +
+      "or there is none. When what gets saved changes, raise VERSION in src/core.ts, add an UPGRADES step there that " +
       'turns saves from the old version into the new shape, and add a SAVED_SHAPE for the new VERSION here, with "?" ' +
       `after any key only some saves have. What gets saved now:\n  ${JSON.stringify(shape)}`,
   );
@@ -1128,29 +1209,31 @@ test("saved progress: a full save from every older version upgrades to this VERS
   assert.deepEqual(
     missing,
     [],
-    `SAVES in test/core.test.js has no save from version ${missing.join(", ")}. When you raise ` +
+    `SAVES in test/core.test.ts has no save from version ${missing.join(", ")}. When you raise ` +
       "VERSION, add a full save from the old version there, as that version wrote it, with a card holding every card key. " +
       "This test upgrades it, to check that UPGRADES carries existing players' progress over.",
   );
   assert.ok(
     SAVED_SHAPE[VERSION],
-    `There's no SAVED_SHAPE[${VERSION}] in test/core.test.js: add it (see the snapshot test above).`,
+    `There's no SAVED_SHAPE[${VERSION}] in test/core.test.ts: add it (see the snapshot test above).`,
   );
-  const problems = [];
+  const problems: string[] = [];
   // From the newest down, so the first problem names the newest step.
   for (let v = VERSION; v >= 1; v--) {
     if (!SAVES[v]) continue;
     assert.deepEqual(
       shapeOf(SAVES[v]),
       everyKey(SAVED_SHAPE[v]),
-      `SAVES[${v}] in test/core.test.js should be a full ` +
+      `SAVES[${v}] in test/core.test.ts should be a full ` +
         `version ${v} save, with every key SAVED_SHAPE[${v}] lists (at least one card holding every card key) and no others.`,
     );
-    let s;
+    let s: State;
     try {
       s = migrate(structuredClone(SAVES[v]));
     } catch (e) {
-      problems.push(`version ${v} save: upgrading it threw "${e.message}"`);
+      problems.push(
+        `version ${v} save: upgrading it threw "${e instanceof Error ? e.message : e}"`,
+      );
       continue;
     }
     const lost = Object.keys(SAVES[v].cards).filter((c) => !s.cards[c]);
@@ -1161,22 +1244,29 @@ test("saved progress: a full save from every older version upgrades to this VERS
     problems,
     [],
     `Upgrading older saves doesn't give the shape in SAVED_SHAPE[${VERSION}]. UPGRADES in ` +
-      `src/core.js needs a step for every version from 1 to ${VERSION - 1} (UPGRADES[v] turns a version v save into a ` +
+      `src/core.ts needs a step for every version from 1 to ${VERSION - 1} (UPGRADES[v] turns a version v save into a ` +
       "version v + 1 save), and each step must add, rename or remove every key that changed in that version. " +
       "Found:\n  " +
       problems.join("\n  "),
   );
 });
 
+// The arguments READS and WRITERS call functions with (see readArgs).
+interface Args {
+  codes: Code[];
+  unseen: Code | undefined;
+  run: Run;
+}
+type Call = (k: HoistCore.Core, args: Args) => unknown;
 // Functions createCore returns that change saved progress, each called so that it does (with the arguments from
 // readArgs). session writes for "Learn 5 more"; its methods are checked in "random play keeps every rule".
 const WRITERS = {
   touchDay: (k) => k.touchDay(),
-  introduce: (k, { unseen }) => k.introduce(unseen),
+  introduce: (k, { unseen }) => k.introduce(must(unseen, "a flag not seen yet")),
   grade: (k, { codes }) => k.grade(codes[0], 3),
   session: (k) => k.session("more"),
   setSetting: (k) => k.setSetting("perDay", 20),
-};
+} satisfies Partial<Record<keyof HoistCore.Core, Call>>;
 // Every other function createCore returns, each called with realistic arguments: `codes`, flags to ask about, and
 // `run`, an extra practice run (see readArgs).
 const READS = {
@@ -1211,10 +1301,10 @@ const READS = {
   ],
   afterRound: (k, { codes, run }) => k.afterRound(run, new Set(codes)),
   shuffle: (k, { codes }) => k.shuffle(codes),
-};
+} satisfies Partial<Record<keyof HoistCore.Core, Call>>;
 // Arguments for READS and WRITERS: the first three flags seen, one not seen yet (if any is left), Kosovo, and an
 // extra practice run two rounds in, as afterRound leaves it.
-function readArgs(t) {
+function readArgs(t: Setup): Args {
   const seenCodes = Object.keys(t.S.cards),
     unseen = CODES.find((c) => !t.S.cards[c]);
   return {
@@ -1234,9 +1324,9 @@ test("saved progress: read-only functions never change it, with day counters fro
   t.S.confusions = { [`${missed}>fr`]: 2 };
   const args = readArgs(t);
 
-  const unsorted = Object.keys(t.core).filter(
-    (f) => typeof t.core[f] === "function" && !(f in READS) && !(f in WRITERS),
-  );
+  const unsorted = Object.entries(t.core)
+    .filter(([f, v]) => typeof v === "function" && !(f in READS) && !(f in WRITERS))
+    .map(([f]) => f);
   assert.deepEqual(
     unsorted,
     [],
@@ -1263,7 +1353,7 @@ test("saved progress: read-only functions never change it, with day counters fro
         t.changed,
         calls,
         `${f} called env.changed() (with day counters ${counters}), but it only reads saved ` +
-          "progress, so the page saves for nothing. Call changed() in src/core.js only where saved progress is written.",
+          "progress, so the page saves for nothing. Call changed() in src/core.ts only where saved progress is written.",
       );
     }
   }
@@ -1280,18 +1370,18 @@ test("saved progress: every function that changes it calls env.changed(), so the
     assert.notEqual(
       JSON.stringify(t.S),
       before,
-      `WRITERS.${f} in test/core.test.js should call ${f} so that it changes saved progress`,
+      `WRITERS.${f} in test/core.test.ts should call ${f} so that it changes saved progress`,
     );
     assert.ok(
       t.changed > calls,
       `${f} changed saved progress without calling env.changed(), so the page won't save the change ` +
-        "and it's lost on reload. In src/core.js, call changed() wherever saved progress is written.",
+        "and it's lost on reload. In src/core.ts, call changed() wherever saved progress is written.",
     );
   }
 });
 
 /* ---------- No page code ---------- */
-const CORE_PATH = path.join(__dirname, "..", "src", "core.js");
+const CORE_PATH = path.join(import.meta.dirname, "..", "src", "core.ts");
 // Names the page or Node has. In the sandbox, reading one throws, even through typeof, so a check like
 // `typeof document !== "undefined"` can't hide page code. Using any other name the sandbox lacks throws a ReferenceError.
 const PAGE_AND_NODE = [
@@ -1316,20 +1406,37 @@ const PAGE_AND_NODE = [
   "require",
   "global",
   "Buffer",
+  "module",
 ];
-// Loads src/core.js in a fresh context with nothing but the language itself, where reading the clock or randomness
-// directly throws. Returns what core.js exports, through the module object it looks for.
-function sandboxedCore() {
-  const context = vm.createContext({ module: {} });
-  const g = vm.runInContext("globalThis", context);
-  const off = (what) => {
-    throw Object.assign(new Error(`core.js used ${what}`), { used: what });
+// src/core.ts as a plain script, and a map from its lines back to core.ts. The script sets the global HoistCore to
+// what core.ts exports, and is strict, as core.ts is as an ES module. Stack traces call it core-sandbox.js.
+const SANDBOX_FILE = "core-sandbox.js";
+function coreScript() {
+  const { code, map } = transformSync(fs.readFileSync(CORE_PATH, "utf8"), {
+    loader: "ts",
+    format: "iife",
+    globalName: "HoistCore",
+    banner: '"use strict";',
+    sourcemap: "external",
+    sourcefile: CORE_PATH,
+  });
+  const payload: SourceMapPayload = JSON.parse(map);
+  return { code, map: new SourceMap(payload) };
+}
+// Loads src/core.ts in a fresh context with nothing but the language itself, where reading the clock or randomness
+// directly throws. Returns what core.ts exports, through the global its script sets.
+function sandboxedCore(code: string): CoreModule {
+  const sandbox: { HoistCore?: CoreModule } = {};
+  const context = vm.createContext(sandbox);
+  const g: typeof globalThis = vm.runInContext("globalThis", context);
+  const off = (what: string): never => {
+    throw Object.assign(new Error(`core.ts used ${what}`), { used: what });
   };
   for (const name of PAGE_AND_NODE) Object.defineProperty(g, name, { get: () => off(name) });
   g.Math.random = () => off("Math.random()");
   // new Date(ms) still works: dayNum() turns env.now() into a date.
   const RealDate = g.Date;
-  function SandboxDate(...args) {
+  function SandboxDate(...args: unknown[]): Date {
     if (!new.target) off("Date()");
     if (!args.length) off("new Date() with no time");
     return Reflect.construct(RealDate, args, new.target);
@@ -1340,16 +1447,18 @@ function sandboxedCore() {
     parse: RealDate.parse,
     now: () => off("Date.now()"),
   });
-  g.Date = SandboxDate;
-  vm.runInContext(fs.readFileSync(CORE_PATH, "utf8"), context, { filename: CORE_PATH });
-  return context.module.exports;
+  // As g.Date = SandboxDate would, which TypeScript rejects: SandboxDate isn't a full DateConstructor.
+  Object.defineProperty(g, "Date", { value: SandboxDate });
+  vm.runInContext(code, context, { filename: SANDBOX_FILE });
+  return must(sandbox.HoistCore, "a HoistCore global from the core script");
 }
 
-test("core.js: no page code, and the clock and randomness come only through env", () => {
-  // Runs everything the page does with core.js, in the sandbox. Code that never runs isn't checked this way, but
+test("core.ts: no page code, and the clock and randomness come only through env", () => {
+  // Runs everything the page does with core.ts, in the sandbox. Code that never runs isn't checked this way, but
   // code that never runs can't misbehave either.
+  const { code, map } = coreScript();
   try {
-    const Core = sandboxedCore();
+    const Core = sandboxedCore(code);
     const early = setup({ kosovo: true }, seeded(13), Core);
     practice(early, 3);
     const late = playThrough(Core);
@@ -1368,12 +1477,18 @@ test("core.js: no page code, and the clock and randomness come only through env"
     Core.migrate(null);
     Core.isNewer({ v: Core.VERSION + 1 });
   } catch (e) {
+    // An error from the sandbox comes from its own Error, which instanceof Error doesn't recognize.
+    if (!Error.isError(e)) throw e;
     const used =
-      e.used || (e.name === "ReferenceError" && (/^(\S+) is not defined/.exec(e.message) || [])[1]);
+      ("used" in e && typeof e.used === "string" && e.used) ||
+      (e.name === "ReferenceError" && /^(\S+) is not defined/.exec(e.message)?.[1]);
     if (!used) throw e;
-    const line = (/src[\\/]core\.js:(\d+)/.exec(e.stack) || [])[1];
+    // Where in core.ts: the first line of the script in the stack, mapped back.
+    const at = /core-sandbox\.js:(\d+):(\d+)/.exec(e.stack ?? "");
+    const origin = at ? map.findOrigin(Number(at[1]), Number(at[2])) : {};
+    const line = "lineNumber" in origin ? origin.lineNumber : null;
     assert.fail(
-      `src/core.js${line ? ` line ${line}` : ""} uses ${used}. core.js must not use page or Node globals, and must ` +
+      `src/core.ts${line ? ` line ${line}` : ""} uses ${used}. core.ts must not use page or Node globals, and must ` +
         "take the clock and randomness only through env (now, random) in createCore, so the page and the tests control them.",
     );
   }
@@ -1381,7 +1496,7 @@ test("core.js: no page code, and the clock and randomness come only through env"
 
 /* ---------- FSRS ---------- */
 test("FSRS: first answers use the weights, and intervals target 90% recall", () => {
-  assert.equal(fsrs(null, 3).S, W[2]);
+  assert.equal(fsrs(null, 3, 0).S, W[2]);
   assert.equal(retr(0, 5), 1);
   assert.ok(Math.abs(ivlFor(10) - 10) < 1e-9);
   assert.ok(Math.abs(retr(ivlFor(10), 10) - 0.9) < 1e-9);

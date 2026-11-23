@@ -1,0 +1,9 @@
+{
+  // The page script, which runs in the browser.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["es2023", "dom"],
+    "tsBuildInfoFile": "node_modules/.tmp/tsconfig.page.tsbuildinfo"
+  },
+  "files": ["src/page.ts"]
+}

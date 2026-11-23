@@ -1,0 +1,16 @@
+{
+  // Settings every part shares. Each part has its own file, for the globals it can use:
+  // tsconfig.core.json (none), tsconfig.page.json (the browser's) and tsconfig.node.json (Node's).
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "target": "es2023",
+    "lib": ["es2023"],
+    "types": [],
+    "module": "nodenext",
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true
+  }
+}

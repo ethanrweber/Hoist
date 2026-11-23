@@ -1,5 +1,7 @@
 // c: ISO code, n: display name, a: other accepted answers, r: region, h: hook (the visual "tell")
-const COUNTRIES = [
+import type { Country, Family } from "./core.ts";
+
+export const COUNTRIES: readonly Country[] = [
   {
     c: "af",
     n: "Afghanistan",
@@ -942,7 +944,7 @@ const COUNTRIES = [
 ];
 
 // Look-alike families: introduced together, used as multiple-choice distractors and side-by-side comparisons.
-const FAMILIES = [
+export const FAMILIES: readonly Family[] = [
   ["td", "ro", "ad", "md"],
   ["id", "mc", "pl", "sg"],
   ["ie", "ci", "it", "mx"],
@@ -984,5 +986,3 @@ const FAMILIES = [
   ["vc", "rw"],
   ["gq", "mz", "st", "dj"],
 ];
-
-if (typeof module !== "undefined") module.exports = { COUNTRIES, FAMILIES };
