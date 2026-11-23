@@ -11,7 +11,7 @@ Hoist is a single-page flag trainer built on how memory actually works:
 
 ## Playing
 
-Open the site and press **Start session**. On a keyboard: `1`–`4` pick a choice, `Enter` checks a typed answer (or shows choices if the box is empty), and `Esc` means "I don't know."
+Open the site and press **Start session**. On a keyboard: `1`–`4` pick a choice, `Enter` checks a typed answer (or shows choices if the box is empty), and `Esc` means "I don't know" when typing a name. Anywhere else in a session, `Esc` ends the session.
 
 Progress is saved in your browser, so each browser or device keeps its own progress.
 
@@ -20,8 +20,8 @@ Progress is saved in your browser, so each browser or device keeps its own progr
 Everything ships as one file, `index.html`. To change it, edit the sources and rebuild:
 
 - `src/countries.js` has each country's name, accepted alternate names, region and one-line description, plus the look-alike families.
-- `src/core.js` holds the rules: scheduling, which flags are new each day, building a session, checking typed answers, and upgrading saved progress. It has no page code, so it can be tested in Node.
-- `src/template.html` is the page: HTML, CSS, and the JavaScript that draws screens and handles input.
+- `src/core.js` holds the rules: scheduling, which flags are new each day, building and running a session (what each answer means, how it's graded, when a missed flag comes back), checking typed answers, settings, and upgrading saved progress. It has no page code, so it can be tested in Node.
+- `src/template.html` is the page: HTML, CSS, and the JavaScript that draws screens, turns clicks and keys into answers for `core.js`, and saves progress in the browser.
 - `src/flags/` holds the flag SVGs. `src/neighbors.json` lists the most similar-looking flags for each one, used as extra wrong answers.
 
 Then run:

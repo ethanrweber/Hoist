@@ -275,6 +275,303 @@ test("extra practice: flags missed today lead a new run, but Another rounds don'
   assert.ok(missed.every(c => t.core.buildQueue("extra", { n: 20 }).some(it => it.c === c)), "a new run should bring them back");
 });
 
+/* ---------- Sessions ---------- */
+// Each country's name, for typed answers.
+const NAME = Object.fromEntries(COUNTRIES.map(c => [c.c, c.n]));
+const oneOf = (rand, list) => list[Math.floor(rand() * list.length)];
+// Makes `codes` due today at `stage`. With perDay 0 there's nothing new, so a session asks just these.
+function dueToday(t, codes, stage = "mc"){
+  const d = t.core.dayNum();
+  codes.forEach(c => t.S.cards[c] = { stage, streak: 0, reps: 3, lapses: 0, S: 5, D: 5, last: d - 2, due: d });
+}
+// A wrong choice among the options.
+const wrongPick = (q, c) => q.options.find(o => o !== c);
+// Plays session `s` to its end, answering each question with `answer(it, question)`. Returns the items shown.
+function playAll(s, answer){
+  const shown = [];
+  for (s.next(); s.current(); s.next()){
+    const it = s.current(); shown.push(it);
+    if (it.k === "ask") answer(it, s.question());
+  }
+  return shown;
+}
+// Typed answers a player might give for flag c: right, a letter dropped, another country, no country, blank,
+// and one as close to two countries (ambiguous for the flags listed, a wrong guess for the rest).
+const AMBIGUOUS = { au: "Austrlia", at: "Austrlia", ne: "Nigeri", ng: "Nigeri", gm: "ambia", zm: "ambia", is: "Ieland",
+  ie: "Ieland", bi: "Brundi", gy: "Gyana", na: "Nambia", rs: "Seria" };
+function typedAnswer(c, rand){
+  const n = NAME[c], i = Math.floor(rand() * n.length);
+  return oneOf(rand, [n, n.slice(0, i) + n.slice(i + 1), NAME[oneOf(rand, CODES)], "zzzz", "", AMBIGUOUS[c] || "Nigeri"]);
+}
+// Answers the question on screen the way a player might, at random: right and wrong picks, any typedAnswer,
+// "Show choices" and "I don't know". Like the page, it shows choices after a blank and asks again after an
+// ambiguous answer. Returns each result, the answer last.
+function answerRandomly(s, it, q, rand){
+  const out = [];
+  if (q.view === "typed" && rand() < 0.15) q = s.question({ hint: true });
+  for (;;){
+    let r;
+    if (q.view === "mc") r = s.answer({ pick: rand() < 0.7 ? it.c : oneOf(rand, q.options) }, { ms: rand() * 9000 });
+    else if (rand() < 0.1) r = s.answer({ dunno: true });
+    else r = s.answer({ typed: typedAnswer(it.c, rand) }, { ms: rand() * 15000, firstKeyMs: rand() < 0.2 ? null : rand() * 4000 });
+    out.push(r);
+    if (r.verdict === "empty") q = s.question({ hint: true });
+    else if (r.verdict !== "ambiguous") return out;
+  }
+}
+
+// Answers the one question of a session about Argentina, due today at `stage`, with `act(s, question)`.
+function answerOne(stage, act){
+  const t = setup({ perDay: 0 }); dueToday(t, ["ar"], stage);
+  const s = t.core.session("normal"); s.next();
+  const r = act(s, s.question());
+  return { r, card: t.S.cards.ar };
+}
+// The card Argentina would have after grading it g directly.
+function gradedAs(stage, g, opts){
+  const t = setup({ perDay: 0 }); dueToday(t, ["ar"], stage);
+  t.core.grade("ar", g, opts);
+  return t.S.cards.ar;
+}
+
+test("sessions: picks and typed answers are graded by time, typos and Show choices, on each side of every cutoff", () => {
+  const pick = (o, ms) => (s, q) => s.answer({ pick: o === "wrong" ? wrongPick(q, "ar") : o }, { ms });
+  const hintedPick = (o, ms) => (s) => pick(o, ms)(s, s.question({ hint: true }));
+  const typed = (text, ms, firstKeyMs = 500) => s => s.answer({ typed: text }, { ms, firstKeyMs });
+  // [stage, answer, verdict, quick, grade, keepStage]. A wrong pick's guess is the choice picked.
+  const cases = [
+    ["mc", pick("ar", 6000), "right", false, 3],
+    ["mc", pick("ar", 6001), "right", false, 2],
+    ["mc", pick("wrong", 2199), "miss", true, 1],
+    ["mc", pick("wrong", 2200), "miss", false, 1],
+    ["typed", hintedPick("ar", 1000), "hinted", false, 1, true],
+    ["typed", hintedPick("wrong", 1000), "miss", false, 1],
+    ["typed", typed("Argentina", 12000), "right", false, 3],
+    ["typed", typed("Argentina", 12001), "right", false, 2],
+    ["typed", typed("Argentna", 1000), "typo", false, 2],
+    ["typed", typed("Brazil", 3000, 2499), "miss", true, 1],
+    ["typed", typed("Brazil", 3000, 2500), "miss", false, 1],
+    ["typed", typed("Brazil", 3000, null), "miss", false, 1],
+    ["typed", typed("zzzz", 3000, 100), "miss", false, 1],
+    ["typed", s => s.answer({ dunno: true }), "miss", false, 1],
+  ];
+  for (const [i, [stage, act, verdict, quick, g, keepStage]] of cases.entries()){
+    const { r, card } = answerOne(stage, act), name = `case ${i} (${verdict})`;
+    assert.equal(r.verdict, verdict, name);
+    assert.equal(r.quick, quick, name);
+    assert.deepEqual(card, gradedAs(stage, g, { keepStage }), `${name} should grade ${g}`);
+  }
+  assert.equal(answerOne("typed", typed("Brazil", 3000)).r.guess, "br");
+  assert.equal(answerOne("typed", typed("zzzz", 3000)).r.guess, null);
+  // A blank or ambiguous answer isn't one: nothing changes, and the question can still be answered.
+  for (const [code, text, verdict] of [["ar", " ", "empty"], ["au", "Austrlia", "ambiguous"]]){
+    const t = setup({ perDay: 0 }); dueToday(t, [code], "typed");
+    const s = t.core.session("normal"); s.next(); s.question();
+    const before = JSON.stringify(t.S);
+    assert.deepEqual(s.answer({ typed: text }, { ms: 1000, firstKeyMs: 100 }), { verdict, guess: null, quick: false });
+    assert.equal(JSON.stringify(t.S), before);
+    assert.equal(s.answer({ typed: NAME[code] }, { ms: 1000 }).verdict, "right");
+  }
+});
+
+test("sessions: a missed flag comes back 3 cards later after a quick miss, 5 otherwise, and is asked at most 3 times", () => {
+  const t = setup({ perDay: 0 }); dueToday(t, CODES.slice(0, 12));
+  const s = t.core.session("normal"), asked = [];
+  let target = null;
+  // Misses one flag every time it's asked: quickly, then slowly, then quickly again. Answers the rest right.
+  playAll(s, (it, q) => {
+    target = target || it.c;
+    if (it.c !== target) return s.answer({ pick: it.c }, { ms: 1000 });
+    asked.push([s.progress().done, it.n]);
+    s.answer({ pick: wrongPick(q, it.c) }, { ms: it.n === 2 ? 3000 : 1000 });
+  });
+  assert.deepEqual(asked, [[0, 1], [4, 2], [10, 3]]);
+  // Near the end of the queue, it comes back as the next card.
+  const t2 = setup({ perDay: 0 }); dueToday(t2, ["ar"]);
+  const s2 = t2.core.session("normal");
+  assert.deepEqual(playAll(s2, (it, q) => s2.answer({ pick: wrongPick(q, it.c) }, { ms: 3000 })),
+    [1, 2, 3].map(n => ({ k: "ask", c: "ar", n })));
+});
+
+test("sessions: a normal session grades each flag once, even when it's asked again", () => {
+  const codes = CODES.slice(0, 6);
+  const t = setup({ perDay: 0 }); dueToday(t, codes);
+  // Misses each flag at first, then gets it right.
+  const s = t.core.session("normal");
+  const shown = playAll(s, (it, q) => s.answer({ pick: it.n === 1 ? wrongPick(q, it.c) : it.c }, { ms: 3000 }));
+  assert.equal(shown.length, 12);
+  for (const c of codes) assert.deepEqual(t.S.cards[c], gradedAs("mc", 1), c);   // as one miss, and nothing else
+});
+
+test("sessions: extra practice never changes cards, but records mix-ups", () => {
+  const t = setup({}, seeded(14)); learn(t, CODES.slice(0, 40));
+  const cards = JSON.stringify(t.S.cards), s = t.core.session("extra", newRun(20)), wrong = [];
+  playAll(s, (it, q) => {
+    const r = s.answer({ typed: it.n > 1 ? NAME[it.c] : it.c === "fr" ? NAME.de : NAME.fr }, { ms: 3000 });
+    if (r.guess) wrong.push(`${it.c}>${r.guess}`);
+  });
+  assert.equal(wrong.length, 20);
+  assert.equal(JSON.stringify(t.S.cards), cards);
+  assert.deepEqual(Object.keys(t.S.confusions).sort(), wrong.sort());
+});
+
+test("sessions: a right pick after Show choices counts as a miss, comes back, and the flag stays at typing", () => {
+  const t = setup({ perDay: 0 }); dueToday(t, ["ar"], "typed");
+  const s = t.core.session("normal"); s.next();
+  assert.deepEqual(s.question(), { view: "typed" });
+  const q = s.question({ hint: true });
+  assert.equal(q.view, "mc");
+  assert.ok(q.options.includes("ar"));
+  assert.deepEqual(s.answer({ pick: "ar" }, { ms: 1000 }), { verdict: "hinted", guess: null, quick: false });
+  assert.equal(t.S.cards.ar.stage, "typed");
+  s.next();
+  assert.deepEqual(s.current(), { k: "ask", c: "ar", n: 2 });
+  assert.deepEqual(s.question(), { view: "typed" }, "Show choices lasts for one question");
+  s.answer({ typed: "Argentina" }, { ms: 1000 });
+  assert.deepEqual(s.end().summary, { mode: "normal", right: 0, total: 1, mixups: [] });
+});
+
+test("sessions: reaching a new flag introduces it, and its intro is skipped if another tab introduced it first", () => {
+  const t = setup(), s = t.core.session("normal");
+  const [a, b, ...rest] = t.core.planToday().groups.flat();
+  assert.equal(s.next(), true);
+  assert.deepEqual(s.current(), { k: "intro", c: a });
+  assert.ok(t.core.seen(a));
+  // Another tab introduces b, the next new flag, and this page loads what it saved.
+  t.S = structuredClone(t.S); t.core.introduce(b);
+  const shown = [s.current()].concat(playAll(s, (it) => s.answer({ dunno: true })));
+  const intros = shown.filter(it => it.k === "intro").map(it => it.c);
+  assert.deepEqual(intros, [a, ...rest]);
+  assert.ok(shown.some(it => it.k === "ask" && it.c === b), "the flag is still asked");
+});
+
+test("sessions: once a question has its answer, more answers, Show choices and I don't know are ignored", () => {
+  const t = setup({ perDay: 0 }); dueToday(t, ["ar"], "typed");
+  const s = t.core.session("normal"); s.next();
+  assert.equal(s.answer({ typed: "Argentina" }, { ms: 1000 }), null, "an answer before the question is shown");
+  s.question();
+  assert.equal(s.answer({ pick: "ar" }, { ms: 1000 }), null, "a pick on a typing question");
+  assert.equal(s.answer({ typed: "Brazil" }, { ms: 3000, firstKeyMs: 1000 }).verdict, "miss");
+  const after = JSON.stringify(t.S);
+  assert.equal(s.answer({ typed: "Argentina" }, { ms: 1000 }), null);
+  assert.equal(s.answer({ dunno: true }), null);
+  assert.equal(s.question({ hint: true }), null);
+  assert.equal(JSON.stringify(t.S), after);
+  assert.equal(s.progress().total, 2, "asked again once");
+  assert.deepEqual(s.end().summary, { mode: "normal", right: 0, total: 1, mixups: [["ar", "br"]] });
+});
+
+test("sessions: Learn 5 more adds 5 new flags to today, and the session brings them in", () => {
+  const t = setup({ perDay: 5 }), first = t.core.session("normal");
+  playAll(first, (it) => first.answer({ pick: it.c }, { ms: 1000 }));
+  assert.equal(t.core.newAllowance(), 0);
+  const s = t.core.session("more");
+  assert.equal(s.mode, "normal");
+  assert.equal(t.core.today().bonus, 5);
+  assert.equal(t.core.newAllowance(), 5);
+  const plan = t.core.planToday();
+  const intros = playAll(s, (it) => s.answer({ pick: it.c }, { ms: 1000 })).filter(it => it.k === "intro").map(it => it.c);
+  assert.deepEqual(intros, plan.groups.flat());
+  assert.equal(intros.length, 5);
+});
+
+test("sessions: the summary counts first answers, and lists each mix-up once, in order", () => {
+  // In extra practice, so a miss leaves the flag at typing.
+  const t = setup(); learn(t, CODES.slice(0, 5));
+  const s = t.core.session("extra", newRun(20)), [x, y] = CODES.slice(10, 12), order = [];
+  // The first flag asked is taken for x at its first two asks, the second for y at its first. All else is right.
+  playAll(s, (it) => {
+    if (!order.includes(it.c)) order.push(it.c);
+    const wrong = it.c === order[0] && it.n < 3 ? x : it.c === order[1] && it.n === 1 ? y : null;
+    s.answer({ typed: NAME[wrong || it.c] }, { ms: 3000 });
+  });
+  const [a, b] = order;
+  assert.deepEqual(s.end().summary, { mode: "extra", right: 3, total: 5, mixups: [[a, x], [b, y]] });
+  assert.deepEqual(t.S.confusions, { [`${a}>${x}`]: 2, [`${b}>${y}`]: 1 });
+});
+
+// What core.js says about saving: only session("more"), next() when it returns true, and real answers write.
+test("sessions: starting a normal or extra session, and every session read, leave saved progress alone", () => {
+  const t = setup({}, seeded(15)); practice(t, 3);
+  const same = (what, f) => { const before = JSON.stringify(t.S), out = f(); assert.equal(JSON.stringify(t.S), before, `${what} changed saved progress`); return out; };
+  same('session("extra")', () => t.core.session("extra", newRun(20)));
+  const s = same('session("normal")', () => t.core.session("normal")), rand = seeded(16);
+  for (;;){
+    const before = JSON.stringify(t.S), isNew = s.next();
+    if (!isNew) assert.equal(JSON.stringify(t.S), before, "next() changed saved progress, but returned false");
+    const it = same("current()", () => s.current());
+    if (!it) break;
+    assert.equal(isNew, it.k === "intro");
+    same("progress()", () => s.progress());
+    if (it.k === "ask") answerRandomly(s, it, same("question()", () => s.question()), rand);
+  }
+  same("end()", () => s.end());
+});
+
+// The current behavior, kept as it is: unlike a miss in a normal session (see "flags missed today come back in
+// every new run" above), a miss in extra practice isn't remembered for the next run.
+test("sessions: a miss in extra practice doesn't set missedOn, so it doesn't lead the next run", () => {
+  const t = setup({}, seeded(17)); learn(t, CODES.slice(0, 60));
+  const s = t.core.session("extra", newRun(20)); s.next(); s.question();
+  const c = s.current().c;
+  s.answer({ dunno: true });
+  assert.equal(t.S.cards[c].missedOn, undefined);
+  const inRuns = Array.from({ length: 10 }, () => t.core.buildQueue("extra", newRun(20)).some(it => it.c === c));
+  assert.ok(inRuns.includes(false), "it was in every new run");
+});
+
+// Many sessions of random events: answers of every kind, answering twice, ending early, another tab introducing a
+// flag, and the day rolling over.
+test("sessions: random play keeps every rule", () => {
+  const rand = seeded(18), t = setup({}, seeded(19)), verdicts = new Set();
+  let run = null, sessions = 0;
+  for (let n = 0; n < 30; n++){
+    if (rand() < 0.5) t.nextDay();
+    const mode = oneOf(rand, ["normal", "normal", "more", "extra"]);
+    if (mode === "extra" && (!run || rand() < 0.5)) run = newRun(oneOf(rand, [20, 50, Infinity]));
+    const s = t.core.session(mode, run);
+    if (!s) continue;
+    sessions++;
+    const upcoming = t.core.planToday().groups.flat(), cards = mode === "extra" && JSON.stringify(t.S.cards);
+    const elsewhere = new Set(), asks = {}, grades = {};
+    for (let steps = 0; ; steps++){
+      assert.ok(steps < 2000, "the session never ended");
+      if (rand() < 0.02) break;   // ended early
+      if (mode !== "extra" && rand() < 0.04){
+        // Another tab introduces a flag this session hasn't reached, and this page loads what it saved.
+        const c = upcoming.find(x => !t.core.seen(x));
+        if (c){ t.S = structuredClone(t.S); t.core.introduce(c); elsewhere.add(c); }
+      }
+      if (rand() < 0.02) t.now += DAY;   // the day rolls over
+      s.next();
+      const it = s.current();
+      if (!it) break;
+      if (it.k === "intro"){ assert.ok(!elsewhere.has(it.c), `${it.c} was introduced twice`); continue; }
+      asks[it.c] = (asks[it.c] || 0) + 1;
+      assert.ok(asks[it.c] <= 3 && it.n === asks[it.c], `${it.c} asked ${asks[it.c]} times, as attempt ${it.n}`);
+      const reps = t.core.card(it.c).reps;
+      answerRandomly(s, it, s.question(), rand).forEach(r => verdicts.add(r.verdict));
+      grades[it.c] = (grades[it.c] || 0) + t.core.card(it.c).reps - reps;
+      if (rand() < 0.2){
+        assert.equal(s.answer({ pick: it.c }, { ms: 1000 }), null);
+        assert.equal(s.answer({ typed: NAME[it.c] }, { ms: 1000 }), null);
+        assert.equal(s.answer({ dunno: true }), null);
+        assert.equal(s.question({ hint: true }), null);
+      }
+    }
+    const end = s.end();
+    if (mode === "extra"){
+      assert.equal(JSON.stringify(t.S.cards), cards, "extra practice changed a card");
+      assert.deepEqual([...end.run.last].sort(), Object.keys(asks).sort(), "the run should use up the flags answered, and only those");
+      run = end.run;
+    }
+    else for (const c in asks) assert.equal(grades[c], 1, `${c} was graded ${grades[c]} times in one session`);
+    assert.equal(end.summary.total, Object.keys(asks).length);
+  }
+  assert.ok(sessions >= 25, `only ${sessions} sessions had anything to do`);
+  assert.deepEqual([...verdicts].sort(), ["ambiguous", "empty", "hinted", "miss", "right", "typo"]);
+});
+
 /* ---------- Saved progress ---------- */
 test("saved progress: anything unreadable becomes a fresh start", () => {
   for (const bad of [null, undefined, 5, "x", []]) assert.deepEqual(migrate(bad), blankState());
@@ -291,11 +588,35 @@ test("saved progress: version 1 saves are upgraded and gaps filled in", () => {
   assert.equal(migrate({ v: 1, settings: { dark: false } }).settings.theme, "system");
 });
 
+test("saved progress: setSetting changes only settings a fresh save has", () => {
+  const t = setup();
+  t.core.setSetting("perDay", 20); t.core.setSetting("theme", "light"); t.core.setSetting("kosovo", true);
+  assert.deepEqual(t.S.settings, { perDay: 20, theme: "light", kosovo: true });
+  for (const name of ["dark", "toString", "__proto__"]) assert.throws(() => t.core.setSetting(name, true), /Unknown setting/, name);
+  assert.deepEqual(t.S.settings, { perDay: 20, theme: "light", kosovo: true });
+});
+
 test("saved progress: a save from a newer version is recognized", () => {
   assert.equal(isNewer({ v: VERSION + 1 }), true);
   assert.equal(isNewer({ v: VERSION }), false);
   assert.equal(isNewer({ v: 1 }), false);
   assert.equal(isNewer(null), false);
+});
+
+test("saved progress: odd versions and odd field types never stop the upgrade, and an odd version counts as 1", () => {
+  // Version 1 had settings.dark, so a save that counts as version 1 gets its theme from it.
+  for (const v of [undefined, -1, 0, 1.5, "x", "2", NaN, Infinity, null, true, [], {}]){
+    const s = migrate({ v, settings: { perDay: 15, dark: true } });
+    assert.equal(s.v, VERSION);
+    assert.deepEqual(s.settings, { perDay: 15, kosovo: false, theme: "dark" }, `v: ${typeof v} ${String(v)}`);
+  }
+  for (const odd of [null, 5, "x", true, [], [1, 2]]){
+    for (const field of ["cards", "day", "settings", "confusions"]){
+      for (const v of [1, VERSION, 1.5]){
+        assert.deepEqual(migrate({ v, [field]: odd }), blankState(), `v ${v} with ${field}: ${JSON.stringify(odd)}`);
+      }
+    }
+  }
 });
 
 // What a save holds at each VERSION: the keys at the top level, in day and settings, and across all cards.
@@ -362,18 +683,23 @@ function shapeProblems(S, v){
   return out;
 }
 
-// Plays through everything that writes saved progress, with Kosovo on: 20 days of sessions with right answers,
-// hard ones and misses, a right pick after Show choices, "Learn 5 more", and extra practice. Returns the setup.
+// Plays through everything that writes saved progress, the way the page does, with Kosovo on: 10 days of sessions
+// with random answers of every kind (see answerRandomly), "Learn 5 more", two rounds of extra practice a day, and
+// each setting. Returns the setup, with the verdicts it got in t.verdicts.
 function playThrough(Core){
-  const t = setup({ kosovo: true }, seeded(11), Core), answer = seeded(12);
-  for (let d = 0; d < 20; d++){
-    if (d === 5) t.core.touchDay().bonus += 5;
-    for (const it of t.core.buildQueue("normal")){
-      if (it.k === "ask"){ const r = answer(); t.core.grade(it.c, r < 0.15 ? 1 : r < 0.3 ? 2 : 3); }
-    }
-    const typed = Object.keys(t.S.cards).find(c => t.S.cards[c].stage === "typed");
-    if (typed) t.core.grade(typed, 1, { keepStage: true });
-    playRun(t, 20, 2);
+  const t = setup({}, seeded(11), Core), rand = seeded(12);
+  t.verdicts = new Set();
+  t.core.setSetting("kosovo", true); t.core.setSetting("theme", "dark");
+  const play = s => {
+    if (!s) return null;
+    playAll(s, (it, q) => answerRandomly(s, it, q, rand).forEach(r => t.verdicts.add(r.verdict)));
+    return s.end();
+  };
+  for (let d = 0; d < 10; d++){
+    if (d === 6) t.core.setSetting("perDay", 15);
+    play(t.core.session(d === 4 ? "more" : "normal"));
+    const round = play(t.core.session("extra", newRun(5)));
+    if (round) play(t.core.session("extra", round.run));
     t.nextDay();
   }
   return t;
@@ -417,8 +743,9 @@ test("saved progress: a full save from every older version upgrades to this VERS
     + "Found:\n  " + problems.join("\n  "));
 });
 
-// Functions createCore returns that change saved progress.
-const WRITERS = ["touchDay", "introduce", "grade"];
+// Functions createCore returns that change saved progress. session writes for "Learn 5 more", and its methods
+// that write are listed in core.js (see the Sessions tests).
+const WRITERS = ["touchDay", "introduce", "grade", "session", "setSetting"];
 // Every other function createCore returns, each called with realistic arguments: `codes`, flags to ask about, and
 // `run`, an extra practice run (see readArgs).
 const READS = {
@@ -506,6 +833,8 @@ test("core.js: no page code, and the clock and randomness come only through env"
     const Core = sandboxedCore();
     const early = setup({ kosovo: true }, seeded(13), Core); practice(early, 3);
     const late = playThrough(Core);
+    assert.deepEqual([...late.verdicts].sort(), ["ambiguous", "empty", "hinted", "miss", "right", "typo"], "The play-through "
+      + "no longer gives every kind of answer, so this test doesn't run all of the session code. Change its seed or play more days.");
     for (const t of [early, late]){
       const [a, b] = Object.keys(t.S.cards);
       t.S.confusions = { [`${a}>${b}`]: 2, [`${b}>fr`]: 1 };   // mix-ups, as the page records them

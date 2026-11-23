@@ -1,5 +1,5 @@
 // The app's rules, with no page or storage code: saved-progress upgrades, the FSRS scheduler, which flags
-// are new today, building a session, and checking typed answers.
+// are new today, building and running a session, checking and grading answers, and settings.
 // build.js inlines this file into index.html, and test/core.test.js loads it in Node.
 const HoistCore = (() => {
 "use strict";
@@ -19,9 +19,10 @@ const UPGRADES = {
 // shown, but this version must not write over it: it doesn't know the newer fields.
 function isNewer(saved){ return isObj(saved) && saved.v > VERSION; }
 // Turns whatever was in storage into a current-version state, filling in anything missing.
+// A save without a whole-number version from 1 up counts as version 1, the one that had no v.
 function migrate(saved){
   if (!isObj(saved)) return blankState();
-  for (let v = saved.v || 1; v < VERSION; v++) UPGRADES[v](saved);
+  for (let v = Number.isInteger(saved.v) && saved.v >= 1 ? saved.v : 1; v < VERSION; v++) UPGRADES[v](saved);
   const b = blankState();
   return {
     v: VERSION,
@@ -266,8 +267,106 @@ function createCore(data, env){
     return out;
   }
 
+  // One session: its queue, what each answer means, when a missed flag comes back, and the summary.
+  // mode: "normal", "more" ("Learn 5 more": 5 more new flags today, then a normal session) or "extra" (run: the
+  // extra practice run, see afterRound). Returns null when there's nothing to practice.
+  // What changes saved progress, so the caller saves after it: session("more"), next() when it returns true
+  // (it introduced a new flag), and answer() unless it returns null or verdict "empty" or "ambiguous".
+  function session(mode, run){
+    if (mode === "more"){ touchDay().bonus += 5; mode = "normal"; }
+    const q = mode === "extra" ? buildQueue("extra", run) : buildQueue(mode);
+    if (!q.length) return null;
+    // i: the item on screen (-1 before the first). view: the question's form once shown. hint: choices were
+    // asked for on a typing question. answered: the question on screen has its answer.
+    let i = -1, view = null, hint = false, answered = false;
+    const graded = new Set(), tried = new Set(), first = {right: 0, total: 0}, mixups = [];
+    const item = () => i >= 0 && i < q.length ? q[i] : null;
+
+    // The item on screen: {k: "intro", c} or {k: "ask", c, n} (n = attempt), or null once the session is over.
+    function current(){ const it = item(); return it && Object.assign({}, it); }
+    // done: items finished, out of total (which grows when a missed flag is queued again).
+    function progress(){ return {done: Math.max(0, i), total: q.length}; }
+    // Moves to the next item, the first one the first time. An intro for a flag another tab has introduced
+    // meanwhile is skipped. Returns true if it introduced a new flag.
+    function next(){
+      if (i >= q.length) return false;
+      i++;
+      while (i < q.length && q[i].k === "intro" && seen(q[i].c)) i++;
+      view = null; answered = false;
+      const it = item();
+      return !!it && it.k === "intro" && introduce(it.c);
+    }
+    // How to ask the flag on screen: typing once it has reached that stage, unless choices were asked for
+    // (hint: "Show choices"). Returns {view: "mc", options} or {view: "typed"}, or null if there's nothing to ask.
+    function question({hint: h = false} = {}){
+      const it = item();
+      if (!it || it.k !== "ask" || answered) return null;
+      const c = it.c, k = card(c);
+      hint = !!h;
+      view = hint || (k ? k.stage : "mc") === "mc" ? "mc" : "typed";
+      return view === "mc" ? {view, options: shuffle([c].concat(distractors(c)), random)} : {view};
+    }
+    // a: {pick: code} for multiple choice, {typed: text} for typing, or {dunno: true} for "I don't know".
+    // ms: time taken to answer. firstKeyMs: time to the first key typed, or null.
+    // Returns {verdict, guess, quick}, or null if there's no question to answer or it has its answer already.
+    // verdict: "right", "typo", "hinted" (right, but after "Show choices", so it counts as a miss) or "miss". For
+    // typing it can also be "empty" (show choices instead) or "ambiguous" (ask for a retype): those aren't answers.
+    // guess: the country answered instead, if any. quick: a fast miss, which comes back sooner.
+    function answer(a, {ms, firstKeyMs} = {}){
+      const it = item();
+      if (!it || it.k !== "ask" || answered || !view) return null;
+      const c = it.c;
+      let r;
+      if (a.dunno) r = {ok: false, guess: null, g: 1};
+      else if ("pick" in a){
+        if (view !== "mc") return null;
+        const ok = a.pick === c;
+        r = {ok, guess: ok ? null : a.pick, g: (!ok || hint) ? 1 : ms > 6000 ? 2 : 3, hinted: ok && hint, quick: !ok && ms < 2200 && !hint};
+      } else {
+        if (view !== "typed") return null;
+        const j = judge(a.typed, c);
+        if (j.empty) return {verdict: "empty", guess: null, quick: false};
+        if (j.ambiguous) return {verdict: "ambiguous", guess: null, quick: false};
+        r = {ok: j.ok, guess: j.guess || null, typo: j.typo, g: !j.ok ? 1 : (j.typo || ms > 12000) ? 2 : 3,
+          quick: !j.ok && !!j.guess && firstKeyMs != null && firstKeyMs < 2500};
+      }
+      answered = true;
+      settle(it, r);
+      return {verdict: r.hinted ? "hinted" : !r.ok ? "miss" : r.typo ? "typo" : "right", guess: r.guess, quick: !!r.quick};
+    }
+    // r.g: the grade. r.hinted: a right pick after "Show choices", which counts as a miss everywhere but leaves the
+    // flag at typing. A flag counts toward the first-try score, and is graded, only at its first answer.
+    function settle(it, r){
+      const c = it.c, missed = !r.ok || r.hinted;
+      if (!tried.has(c)){ tried.add(c); first.total++; if (!missed) first.right++; }
+      if (mode !== "extra" && !graded.has(c)){ grade(c, r.g, {keepStage: r.hinted}); graded.add(c); }
+      if (r.guess && r.guess !== c){
+        const conf = state().confusions, key = c + ">" + r.guess; conf[key] = (conf[key] || 0) + 1;
+        mixups.push([c, r.guess]);
+      }
+      // A missed flag comes back a few cards later (sooner after a quick miss), up to 3 asks in all.
+      if (missed && it.n < 3) q.splice(Math.min(q.length, i + 1 + (r.quick ? 3 : 5)), 0, {k: "ask", c, n: it.n + 1});
+    }
+    // summary: {mode, right: flags right at their first answer, total: flags answered, mixups: [[flag, taken for],
+    // ...], each pair once, in the order they happened}. run: for extra practice, the run after this round.
+    function end(){
+      const mix = [...new Set(mixups.map(([a, b]) => a + ">" + b))].map(k => k.split(">"));
+      return {summary: {mode, right: first.right, total: first.total, mixups: mix}, run: mode === "extra" ? afterRound(run, tried) : run};
+    }
+    return {mode, current, progress, next, question, answer, end};
+  }
+
+  /* ---------- Settings ---------- */
+  // Changes a setting, which must be one a fresh save has: a new setting goes in blankState(), where the
+  // saved-shape test sees it.
+  function setSetting(name, value){
+    if (!Object.keys(blankState().settings).includes(name)) throw new Error(`Unknown setting "${name}"`);
+    state().settings[name] = value;
+  }
+
   return {BY, dayNum, today, touchDay, active, isActive, card, seen, mastered, status, dueList, practiced, newAllowance,
-    lookalikes, distractors, pickNew, planToday, judge, introduce, grade, buildQueue, afterRound, shuffle: a => shuffle(a, random)};
+    lookalikes, distractors, pickNew, planToday, judge, introduce, grade, buildQueue, afterRound, session, setSetting,
+    shuffle: a => shuffle(a, random)};
 }
 
 return {VERSION, blankState, isNewer, migrate, createCore, fsrs, retr, ivlFor, W};
