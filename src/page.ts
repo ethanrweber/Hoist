@@ -627,7 +627,8 @@ document.addEventListener("submit", (e) => {
 });
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if ($("#detail", HTMLDialogElement).open || $("#settings", HTMLDialogElement).open) return;
+  // While a dialog is open, keys are its own: Esc closes it.
+  if (document.querySelector("dialog[open]")) return;
   if (sess) {
     if (sess.view === "mc" && /^[1-4]$/.test(e.key)) {
       const o = sess.opts[+e.key - 1];
@@ -688,6 +689,7 @@ $("#openSettings").addEventListener("click", () => {
   renderSettings();
   $("#settings", HTMLDialogElement).showModal();
 });
+$("#openHowTo").addEventListener("click", () => $("#howto", HTMLDialogElement).showModal());
 $("#settingsForm").addEventListener("change", (e) => {
   if (e.target instanceof HTMLInputElement) {
     if (e.target.name === "perDay") setSetting("perDay", +e.target.value);
@@ -714,9 +716,14 @@ $("#resetBtn").addEventListener("click", (e) => {
   $("#settings", HTMLDialogElement).close();
   renderHome();
 });
-$("#detail").addEventListener("click", (e) => {
-  if (e.target === $("#detail")) $("#detail", HTMLDialogElement).close();
-});
+// A click on the backdrop closes these dialogs. Their content (.dlg) fills the whole box, so a click whose target is
+// the dialog itself landed outside it.
+for (const id of ["#detail", "#howto"]) {
+  const dlg = $(id, HTMLDialogElement);
+  dlg.addEventListener("click", (e) => {
+    if (e.target === dlg) dlg.close();
+  });
+}
 // Pick up progress saved by other tabs, so this page never writes an older copy over it.
 // A hidden page only reloads the data; visibilitychange redraws it when it's shown again.
 function refresh() {
